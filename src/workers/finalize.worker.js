@@ -154,6 +154,7 @@ const worker = new Worker(
         `🧹 [${sessionId}] Cleaning up local files...`
       );
 
+      /*
       for (const c of chunks) {
         if (fs.existsSync(c.file_path)) {
           fs.unlinkSync(c.file_path);
@@ -161,7 +162,8 @@ const worker = new Worker(
       }
 
       if (fs.existsSync(concatFile)) fs.unlinkSync(concatFile);
-      if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
+      // if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile); // Keep output too? Well output is uploaded.
+      */
 
       console.log(
         `✅ [${sessionId}] Session finalized successfully`

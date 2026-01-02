@@ -31,7 +31,7 @@ while cap.isOpened():
                 name = model.names[cls]
                 conf = float(box.conf[0])
 
-                if name in ["cell phone", "book", "laptop"] and conf > 0.6:
+                if name in ["cell phone", "book", "laptop"] and conf > 0.4:
                     found_phone = True
                     print(f"DEBUG: Frame {frame_index}: detected {name} ({conf:.2f})", file=sys.stderr)
 

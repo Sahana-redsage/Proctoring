@@ -47,28 +47,46 @@ export default function VideoRecorder({ sessionId, isExamEnded }) {
 
         recorderRef.current = recorder;
 
-        recorder.ondataavailable = async e => {
+        // Helper to handle upload
+        const handleDataAvailable = async (e) => {
           if (isExamEnded) return;
           if (!e.data || e.data.size === 0) return;
 
           const form = new FormData();
           form.append("sessionId", sessionId);
           form.append("chunkIndex", chunkIndexRef.current);
-          form.append(
-            "startTimeSeconds",
-            chunkIndexRef.current * 10
-          );
-          form.append(
-            "endTimeSeconds",
-            (chunkIndexRef.current + 1) * 10
-          );
+          form.append("startTimeSeconds", chunkIndexRef.current * 10);
+          form.append("endTimeSeconds", (chunkIndexRef.current + 1) * 10);
           form.append("video", e.data);
 
-          await uploadChunk(form);
-          chunkIndexRef.current += 1;
+          try {
+            await uploadChunk(form);
+            chunkIndexRef.current += 1;
+          } catch (err) {
+            console.error("Upload failed", err);
+          }
         };
 
-        recorder.start(10000); // 10s chunks
+        recorder.ondataavailable = handleDataAvailable;
+
+        // Start initial recording
+        recorder.start();
+
+        // Restart recording every 10 seconds to ensure valid WebM headers for each chunk
+        const interval = setInterval(() => {
+          if (recorder.state === "recording") {
+            recorder.stop();
+            // Tiny delay to ensure stop processes and we start a fresh segment
+            setTimeout(() => {
+              if (recorder.state === "inactive" && !isExamEnded) {
+                recorder.start();
+              }
+            }, 50);
+          }
+        }, 10000);
+
+        // Store interval to clear on unmount
+        recorderRef.current.interval = interval;
       })
       .catch(err => {
         console.error("Camera error:", err);
@@ -77,6 +95,9 @@ export default function VideoRecorder({ sessionId, isExamEnded }) {
 
     // 🔁 CLEANUP (SAFE)
     return () => {
+      if (recorderRef.current && recorderRef.current.interval) {
+        clearInterval(recorderRef.current.interval);
+      }
       stopRecording();
     };
   }, [sessionId]);

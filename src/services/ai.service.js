@@ -24,6 +24,11 @@ function runPython(script, videoPath) {
     });
 
     process.on("close", code => {
+      // Log debug output from Python (stderr)
+      if (errorOutput) {
+        console.log(`[Python Debug] ${script}:\n${errorOutput}`);
+      }
+
       if (code !== 0) {
         return reject(
           new Error(`Python error: ${errorOutput || "Unknown error"}`)

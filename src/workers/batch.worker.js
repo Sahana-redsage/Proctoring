@@ -15,21 +15,51 @@ new Worker(
 
     const fromTime = fromChunkIndex * 10;
     const toTime = (toChunkIndex + 1) * 10;
+    const expectedSignals = 30; // 3 chunks * 10 seconds
 
-    const { rows: signals } = await pool.query(
-      `
-      SELECT *
-      FROM proctoring_chunk_signals
-      WHERE session_id = $1
-        AND timestamp_seconds BETWEEN $2 AND $3
-      ORDER BY timestamp_seconds
-      `,
-      [sessionId, fromTime, toTime]
-    );
+    let signals = [];
+    let attempts = 0;
 
-    console.log(`📊 [${sessionId}] Batch ${fromChunkIndex}-${toChunkIndex}: Fetched ${signals.length} signals.`);
+    // 🔄 POLLING: Wait for signals to appear (Race Condition Fix)
+    while (attempts < 10) {
+      const res = await pool.query(
+        `
+        SELECT *
+        FROM proctoring_chunk_signals
+        WHERE session_id = $1
+          AND timestamp_seconds BETWEEN $2 AND $3
+        ORDER BY timestamp_seconds
+        `,
+        [sessionId, fromTime, toTime]
+      );
+      signals = res.rows;
+
+      if (signals.length >= expectedSignals) break;
+
+      console.log(`⏳ Batch ${fromChunkIndex}-${toChunkIndex}: Waiting for signals... (${signals.length}/${expectedSignals})`);
+      await new Promise(r => setTimeout(r, 2000)); // Wait 2s
+      attempts++;
+    }
+
+    console.log(`📊 [${sessionId}] Batch ${fromChunkIndex}-${toChunkIndex}: Processed with ${signals.length} signals.`);
 
     let phoneStart = null;
+
+    // Helper to insert event
+    const saveEvent = async (start, end) => {
+      const duration = end - start;
+      if (duration >= 2) {
+        await pool.query(
+          `
+          INSERT INTO proctoring_events
+          (id, session_id, event_type, start_time_seconds, end_time_seconds, duration_seconds, confidence_score)
+          VALUES (uuid_generate_v4(), $1, 'PHONE_USAGE', $2, $3, $4, 0.7)
+          `,
+          [sessionId, start, end, duration]
+        );
+        console.log(`⚠️ [${sessionId}] Phone usage detected! Duration: ${duration}s (Time: ${start}-${end})`);
+      }
+    };
 
     for (const s of signals) {
       if (s.phone_detected && phoneStart === null) {
@@ -37,25 +67,18 @@ new Worker(
       }
 
       if (!s.phone_detected && phoneStart !== null) {
-        const duration = s.timestamp_seconds - phoneStart;
-
-        if (duration >= 5) {
-          await pool.query(
-            `
-            INSERT INTO proctoring_events
-            (id, session_id, event_type, start_time_seconds, end_time_seconds, duration_seconds, confidence_score)
-            VALUES (uuid_generate_v4(), $1, 'PHONE_USAGE', $2, $3, $4, 0.7)
-            `,
-            [sessionId, phoneStart, s.timestamp_seconds, duration]
-          );
-          console.log(`⚠️ [${sessionId}] Phone usage detected! Duration: ${duration}s (Time: ${phoneStart}-${s.timestamp_seconds})`);
+        await saveEvent(phoneStart, s.timestamp_seconds);
+        phoneStart = null;
       }
-
-      phoneStart = null;
     }
-  }
 
-    return { batchProcessed: true };
+    // 🛑 Handle case where batch ends while phone is still detected
+    if (phoneStart !== null) {
+      const lastTime = signals[signals.length - 1].timestamp_seconds;
+      await saveEvent(phoneStart, lastTime);
+    }
+
+    return { batchProcessed: true, events: true };
   },
-{ connection: redis, concurrency: 2 }
+  { connection: redis, concurrency: 2 }
 );
