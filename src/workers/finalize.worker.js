@@ -4,7 +4,7 @@ const fs = require("fs");
 const { exec } = require("child_process");
 const pool = require("../config/db");
 const { uploadToR2 } = require("../services/r2.service");
-const { finalizeQueue, redisConnection } = require("../config/bullmq");
+const { finalizeQueue, batchQueue, redisConnection } = require("../config/bullmq");
 
 require("dotenv").config();
 
@@ -64,6 +64,24 @@ const worker = new Worker(
         );
 
         return;
+      }
+
+      /**
+       * 1.5️⃣ TRIGGER FINAL BATCH (LEFTOVERS)
+       */
+      const BATCH_SIZE = 3; // Keep consistent with controller
+      const totalChunks = chunks.length;
+
+      // Calculate the starting index for any remaining chunks that didn't form a full batch
+      const remainderStart = Math.floor(totalChunks / BATCH_SIZE) * BATCH_SIZE;
+
+      if (remainderStart < totalChunks) {
+        console.log(`🧩 [${sessionId}] Triggering final batch for leftovers: ${remainderStart} → ${totalChunks - 1}`);
+        await batchQueue.add("PROCESS_BATCH", {
+          sessionId,
+          fromChunkIndex: remainderStart,
+          toChunkIndex: totalChunks - 1
+        });
       }
 
       /**

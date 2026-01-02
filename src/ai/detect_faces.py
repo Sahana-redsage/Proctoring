@@ -37,11 +37,39 @@ while cap.isOpened():
         count = 0
         if result.detections:
             count = len(result.detections)
+            # Simple pose estimation for the first face
+            detection = result.detections[0]
+            
+            # Keypoints: 0=RightEye, 1=LeftEye, 2=NoseTip, 3=Mouth, 4=RightEar, 5=LeftEar
+            kp = detection.location_data.relative_keypoints
+            nose = kp[2]
+            right_ear = kp[4]
+            left_ear = kp[5]
+            
+            # Yaw Estimation (Turning Left/Right)
+            # Compare nose x to the midpoint of ears
+            ear_mid_x = (right_ear.x + left_ear.x) / 2
+            # Range approx -0.5 to 0.5? Normalize by ear distance
+            ear_dist = abs(right_ear.x - left_ear.x) + 1e-6
+            yaw = (nose.x - ear_mid_x) / ear_dist * 2.0  # Scale factor
+
+            # Pitch Estimation (Up/Down)
+            # Compare nose y to ear y (very rough)
+            ear_mid_y = (right_ear.y + left_ear.y) / 2
+            video_aspect_ratio = 16/9 # Assumption
+            pitch = (nose.y - ear_mid_y) 
+            
+            head_pitches.append(yaw) # Storing Yaw in "headPitch" field for now as caller expects simple array
+            # Ideally we should output both, but schema has `headPitch` array. 
+            # Let's map "Gaze Deviation" to this value. 
+            # Deviation = euclidean distance from center?
+            # Let's just store Yaw for now as it's most common "looking away".
+            
+            print(f"DEBUG: Frame {frame_index}: detected {count} faces, Yaw: {yaw:.2f}, Pitch: {pitch:.2f}", file=sys.stderr)
+        else:
+            head_pitches.append(0)
 
         face_counts.append(count)
-        head_pitches.append(0)  # placeholder for face mesh later
-        
-        print(f"DEBUG: Frame {frame_index}: detected {count} faces", file=sys.stderr)
 
     frame_index += 1
 

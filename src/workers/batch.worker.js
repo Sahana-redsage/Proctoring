@@ -43,39 +43,78 @@ new Worker(
 
     console.log(`📊 [${sessionId}] Batch ${fromChunkIndex}-${toChunkIndex}: Processed with ${signals.length} signals.`);
 
-    let phoneStart = null;
+    // State for multiple event types
+    const activeEvents = {};
+
+    const detectors = [
+      {
+        type: "PHONE_USAGE",
+        check: s => s.phone_detected,
+        minDuration: 2
+      },
+      {
+        type: "FACE_NOT_VISIBLE",
+        check: s => !s.face_present,
+        minDuration: 2
+      },
+      {
+        type: "MULTIPLE_FACES",
+        check: s => s.face_count > 1,
+        minDuration: 2
+      },
+      {
+        type: "LOOKING_AWAY", // Gazing
+        // Threshold: 0.5 seems reasonable for "turning head". 
+        // 0 is center. > 0.5 is left, < -0.5 is right.
+        check: s => s.head_yaw && Math.abs(s.head_yaw) > 0.4,
+        minDuration: 5 // Requested 5 seconds
+      }
+    ];
+
+    // Initialize state
+    detectors.forEach(d => activeEvents[d.type] = null);
 
     // Helper to insert event
-    const saveEvent = async (start, end) => {
+    const saveEvent = async (type, start, end, minDuration) => {
       const duration = end - start;
-      if (duration >= 2) {
+      if (duration >= minDuration) {
         await pool.query(
           `
           INSERT INTO proctoring_events
           (id, session_id, event_type, start_time_seconds, end_time_seconds, duration_seconds, confidence_score)
-          VALUES (uuid_generate_v4(), $1, 'PHONE_USAGE', $2, $3, $4, 0.7)
+          VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, 0.8)
           `,
-          [sessionId, start, end, duration]
+          [sessionId, type, start, end, duration]
         );
-        console.log(`⚠️ [${sessionId}] Phone usage detected! Duration: ${duration}s (Time: ${start}-${end})`);
+        console.log(`⚠️ [${sessionId}] ${type} detected! Duration: ${duration}s (Time: ${start}-${end})`);
       }
     };
 
     for (const s of signals) {
-      if (s.phone_detected && phoneStart === null) {
-        phoneStart = s.timestamp_seconds;
-      }
+      for (const d of detectors) {
+        const isTriggered = d.check(s);
+        const startTime = activeEvents[d.type];
 
-      if (!s.phone_detected && phoneStart !== null) {
-        await saveEvent(phoneStart, s.timestamp_seconds);
-        phoneStart = null;
+        if (isTriggered && startTime === null) {
+          // Event Started
+          activeEvents[d.type] = s.timestamp_seconds;
+        } else if (!isTriggered && startTime !== null) {
+          // Event Ended
+          await saveEvent(d.type, startTime, s.timestamp_seconds, d.minDuration);
+          activeEvents[d.type] = null;
+        }
       }
     }
 
-    // 🛑 Handle case where batch ends while phone is still detected
-    if (phoneStart !== null) {
+    // 🛑 Handle open-ended events
+    if (signals.length > 0) {
       const lastTime = signals[signals.length - 1].timestamp_seconds;
-      await saveEvent(phoneStart, lastTime);
+      for (const d of detectors) {
+        const type = d.type;
+        if (activeEvents[type] !== null) {
+          await saveEvent(type, activeEvents[type], lastTime, d.minDuration);
+        }
+      }
     }
 
     return { batchProcessed: true, events: true };

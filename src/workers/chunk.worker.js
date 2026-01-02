@@ -79,15 +79,16 @@ new Worker(
       await pool.query(
         `
         INSERT INTO proctoring_chunk_signals
-        (session_id, timestamp_seconds, face_count, face_present, phone_detected)
-        VALUES ($1, $2, $3, $4, $5)
+        (session_id, timestamp_seconds, face_count, face_present, phone_detected, head_yaw)
+        VALUES ($1, $2, $3, $4, $5, $6)
         `,
         [
           sessionId,
           baseTime + i,
           faceData.faceCounts[i],
           hasFace,
-          hasPhone
+          hasPhone,
+          faceData.headPitch[i] || 0 // We stored Yaw in headPitch in Python
         ]
       );
     }
