@@ -71,8 +71,10 @@ new Worker(
       }
     ];
 
-    // Initialize state
-    detectors.forEach(d => activeEvents[d.type] = null);
+    // Initialize state for each detector
+    detectors.forEach(d => {
+      d.state = { start: null, last: null };
+    });
 
     // Helper to insert event
     const saveEvent = async (type, start, end, minDuration) => {
@@ -93,26 +95,34 @@ new Worker(
     for (const s of signals) {
       for (const d of detectors) {
         const isTriggered = d.check(s);
-        const startTime = activeEvents[d.type];
 
-        if (isTriggered && startTime === null) {
-          // Event Started
-          activeEvents[d.type] = s.timestamp_seconds;
-        } else if (!isTriggered && startTime !== null) {
-          // Event Ended
-          await saveEvent(d.type, startTime, s.timestamp_seconds, d.minDuration);
-          activeEvents[d.type] = null;
+        if (isTriggered) {
+          if (d.state.start === null) {
+            // New Event Start
+            d.state.start = s.timestamp_seconds;
+          }
+          // Keep extending event
+          d.state.last = s.timestamp_seconds;
+        } else {
+          // Condition STOPPED
+          if (d.state.start !== null) {
+            // Check if valid event
+            await saveEvent(d.type, d.state.start, d.state.last, d.minDuration);
+            // Reset
+            d.state.start = null;
+            d.state.last = null;
+          }
         }
       }
     }
 
-    // 🛑 Handle open-ended events
+    // 🛑 Handle open-ended events (carry over to next batch? complex. For now, close them).
+    // Ideally we should state-persist across batches but that requires Redis/DB state.
+    // For this simplified worker, we close at batch end.
     if (signals.length > 0) {
-      const lastTime = signals[signals.length - 1].timestamp_seconds;
       for (const d of detectors) {
-        const type = d.type;
-        if (activeEvents[type] !== null) {
-          await saveEvent(type, activeEvents[type], lastTime, d.minDuration);
+        if (d.state.start !== null) {
+          await saveEvent(d.type, d.state.start, d.state.last, d.minDuration);
         }
       }
     }
