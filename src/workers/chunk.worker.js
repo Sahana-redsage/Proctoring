@@ -67,7 +67,8 @@ new Worker(
     // always run object detection as requested
     console.log(`🔍 [${sessionId}] Chunk ${chunkIndex}: Running Object Detection...`);
     const objectData = await detectObjects(filePath);
-    console.log(`✅ [${sessionId}] Chunk ${chunkIndex}: Object Detection complete. Phone detected frames: ${objectData.phoneDetected.filter(Boolean).length}`);
+    const phoneFrames = objectData.phoneDetected.filter(Boolean).length;
+    console.log(`✅ [${sessionId}] Chunk ${chunkIndex}: Object Detection complete. Phone detected frames: ${phoneFrames}/${objectData.phoneDetected.length}`);
 
     // Insert signals into DB
     // Use safe length check

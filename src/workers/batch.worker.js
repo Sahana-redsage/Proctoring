@@ -50,7 +50,7 @@ new Worker(
       {
         type: "PHONE_USAGE",
         check: s => s.phone_detected,
-        minDuration: 2
+        minDuration: 1 // More sensitive for phone
       },
       {
         type: "FACE_NOT_VISIBLE",
@@ -60,14 +60,14 @@ new Worker(
       {
         type: "MULTIPLE_FACES",
         check: s => s.face_count > 1,
-        minDuration: 2
+        minDuration: 1
       },
       {
         type: "LOOKING_AWAY", // Gazing
         // Threshold: 0.5 seems reasonable for "turning head". 
         // 0 is center. > 0.5 is left, < -0.5 is right.
         check: s => s.head_yaw && Math.abs(s.head_yaw) > 0.4,
-        minDuration: 5 // Requested 5 seconds
+        minDuration: 3 // Requested 5 seconds
       }
     ];
 
