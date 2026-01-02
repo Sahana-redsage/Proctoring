@@ -14,6 +14,8 @@ fps = int(cap.get(cv2.CAP_PROP_FPS))
 frame_interval = max(fps, 1)
 frame_index = 0
 
+print(f"DEBUG: YOLO Processing video {video_path}, FPS: {fps}", file=sys.stderr)
+
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
@@ -31,12 +33,14 @@ while cap.isOpened():
 
                 if name in ["cell phone", "book", "laptop"] and conf > 0.6:
                     found_phone = True
+                    print(f"DEBUG: Frame {frame_index}: detected {name} ({conf:.2f})", file=sys.stderr)
 
         detections.append(found_phone)
 
     frame_index += 1
 
 cap.release()
+print("DEBUG: YOLO Finished processing video", file=sys.stderr)
 
 print(json.dumps({
     "phoneDetected": detections

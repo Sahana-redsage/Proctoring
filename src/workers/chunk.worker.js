@@ -29,14 +29,29 @@ new Worker(
      */
     const frameCount = 10;
     const baseTime = chunkIndex * 10;
+
+    console.log(`🔍 [${sessionId}] Chunk ${chunkIndex}: Finding faces...`);
     const faceData = await detectFaces(filePath);
+    console.log(`✅ [${sessionId}] Chunk ${chunkIndex}: Faces found. Data:`, JSON.stringify(faceData).slice(0, 100) + "...");
 
     // Decide whether to run YOLO
-    const suspiciousGaze = faceData.faceCounts.some(c => c === 1);
+    const suspiciousGaze = faceData.faceCounts.some(c => c === 1); // logic seems to imply 1 face is suspicious? or maybe user meant != 1? Assuming keeping existing logic for now but usually > 1 or 0 is suspicious.
+    // Actually if c === 1 it means 1 face found. If c > 1 multiple faces. If c == 0 no face.
+    // The previous code said: const suspiciousGaze = faceData.faceCounts.some(c => c === 1);
+    // Wait, usually if a face is there it's good. 
+    // If multiple faces or no faces, that's suspicious. 
+    // But the code says "suspiciousGaze = ... some(c => c === 1)". 
+    // This implies if there IS a face, we check for objects? 
+    // Let's just add logs and not change logic unless user asked.
+    // User asked "add more console logs... to know everything".
 
     let objectData = { phoneDetected: [] };
     if (suspiciousGaze) {
+      console.log(`🔍 [${sessionId}] Chunk ${chunkIndex}: Suspicious behavior (or face present). Running Object Detection...`);
       objectData = await detectObjects(filePath);
+      console.log(`✅ [${sessionId}] Chunk ${chunkIndex}: Object Detection complete.`);
+    } else {
+      console.log(`⏭️ [${sessionId}] Chunk ${chunkIndex}: No object detection needed.`);
     }
 
     for (let i = 0; i < faceData.faceCounts.length; i++) {

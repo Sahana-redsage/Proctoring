@@ -27,6 +27,8 @@ new Worker(
       [sessionId, fromTime, toTime]
     );
 
+    console.log(`📊 [${sessionId}] Batch ${fromChunkIndex}-${toChunkIndex}: Fetched ${signals.length} signals.`);
+
     let phoneStart = null;
 
     for (const s of signals) {
@@ -46,13 +48,14 @@ new Worker(
             `,
             [sessionId, phoneStart, s.timestamp_seconds, duration]
           );
-        }
-
-        phoneStart = null;
+          console.log(`⚠️ [${sessionId}] Phone usage detected! Duration: ${duration}s (Time: ${phoneStart}-${s.timestamp_seconds})`);
       }
+
+      phoneStart = null;
     }
+  }
 
     return { batchProcessed: true };
   },
-  { connection: redis, concurrency: 2 }
+{ connection: redis, concurrency: 2 }
 );

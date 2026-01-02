@@ -8,5 +8,6 @@ const finalizeQueue = new Queue("finalizeQueue", { connection: redis });
 module.exports = {
   chunkQueue,
   batchQueue,
-  finalizeQueue
+  finalizeQueue,
+  redisConnection: redis
 };

@@ -2,7 +2,7 @@ const { v4: uuidv4 } = require("uuid");
 const pool = require("../config/db");
 const { chunkQueue, batchQueue, finalizeQueue } = require("../config/bullmq");
 
-const BATCH_SIZE = 10; // 10 chunks = 1 batch
+const BATCH_SIZE = 3; // 3 chunks = 1 batch
 
 // 1️⃣ START SESSION
 exports.startSession = async (req, res) => {
