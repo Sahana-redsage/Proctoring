@@ -14,5 +14,8 @@ app.get("/health", (_, res) => {
 const proctoringRoutes = require("./routes/proctoring.routes");
 
 app.use("/api/v2/proctoring", proctoringRoutes);
+const adminProctoringRoutes = require("./routes/admin.proctoring.routes");
+
+app.use("/api/v2/admin", adminProctoringRoutes);
 
 module.exports = app;

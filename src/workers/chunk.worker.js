@@ -1,6 +1,7 @@
 const { Worker } = require("bullmq");
 const redis = require("../config/redis");
 const pool = require("../config/db");
+const { detectFaces, detectObjects } = require("../services/ai.service");
 
 console.log("🟢 Chunk Worker started");
 
@@ -28,29 +29,29 @@ new Worker(
      */
     const frameCount = 10;
     const baseTime = chunkIndex * 10;
+    const faceData = await detectFaces(filePath);
 
-    for (let i = 0; i < frameCount; i++) {
-      const timestamp = baseTime + i;
+    // Decide whether to run YOLO
+    const suspiciousGaze = faceData.faceCounts.some(c => c === 1);
 
-      // 🔹 STUB SIGNALS (replace with MediaPipe / YOLO)
-      const facePresent = true;
-      const faceCount = 1;
-      const pitch = Math.random() * 30; // fake head pitch
-      const phoneDetected = pitch > 22; // fake logic
+    let objectData = { phoneDetected: [] };
+    if (suspiciousGaze) {
+      objectData = await detectObjects(filePath);
+    }
 
+    for (let i = 0; i < faceData.faceCounts.length; i++) {
       await pool.query(
         `
         INSERT INTO proctoring_chunk_signals
-        (session_id, timestamp_seconds, face_count, face_present, head_pitch, phone_detected)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        `,
+    (session_id, timestamp_seconds, face_count, face_present, phone_detected)
+    VALUES ($1, $2, $3, $4, $5)
+    `,
         [
           sessionId,
-          timestamp,
-          faceCount,
-          facePresent,
-          pitch,
-          phoneDetected
+          baseTime + i,
+          faceData.faceCounts[i],
+          faceData.faceCounts[i] > 0,
+          objectData.phoneDetected[i] || false
         ]
       );
     }
