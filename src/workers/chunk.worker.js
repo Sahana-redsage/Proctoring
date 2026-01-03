@@ -60,6 +60,10 @@ new Worker(
     const faceData = await detectFaces(filePath);
     console.log(`✅ [${sessionId}] Chunk ${chunkIndex}: Faces found. Data:`, JSON.stringify(faceData).slice(0, 100) + "...");
 
+    if (!faceData.faceCounts || faceData.faceCounts.length === 0) {
+      console.warn(`⚠️ [${sessionId}] Chunk ${chunkIndex}: No frames processed by Face Detector! Video might be invalid or empty.`);
+    }
+
     // Decide whether to run Object Detection (e.g. phone)
     // Run if ANY face is detected in the frames.
     const suspiciousGaze = faceData.faceCounts && faceData.faceCounts.some(c => c >= 1);

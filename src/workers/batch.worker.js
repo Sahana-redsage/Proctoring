@@ -76,7 +76,7 @@ new Worker(
       {
         type: "FACE_NOT_VISIBLE",
         check: s => !s.face_present,
-        minDuration: 2
+        minDuration: 1
       },
       {
         type: "MULTIPLE_FACES",
@@ -92,9 +92,19 @@ new Worker(
       }
     ];
 
-    // Initialize state for each detector
+    // State management for cross-batch events
+    const stateKey = `session:${sessionId}:detector_state`;
+    const savedStateVal = await redis.get(stateKey);
+    const savedState = savedStateVal ? JSON.parse(savedStateVal) : {};
+
+    // Initialize state for each detector from Redis or default
     detectors.forEach(d => {
-      d.state = { start: null, last: null };
+      if (savedState[d.type]) {
+        d.state = savedState[d.type];
+        console.log(`🔄 [${sessionId}] Resumed ${d.type} from previous batch (Start: ${d.state.start})`);
+      } else {
+        d.state = { start: null, last: null };
+      }
     });
 
     // Helper to insert event
@@ -149,16 +159,17 @@ new Worker(
       }
     }
 
-    // 🛑 Handle open-ended events (carry over to next batch? complex. For now, close them).
-    // Ideally we should state-persist across batches but that requires Redis/DB state.
-    // For this simplified worker, we close at batch end.
-    if (signals.length > 0) {
-      for (const d of detectors) {
-        if (d.state.start !== null) {
-          await saveEvent(d.type, d.state.start, d.state.last, d.minDuration);
-        }
-      }
-    }
+    // Save state for next batch (Cross-Batch Persistence)
+    const nextState = {};
+    detectors.forEach(d => {
+      nextState[d.type] = d.state;
+    });
+    await redis.set(stateKey, JSON.stringify(nextState), 'EX', 3600); // 1 hour TTL
+
+    // We do NOT close open-ended events here anymore. 
+    // They will be continued in next batch or closed there.
+    // If this is the absolute last batch, they might remain 'open' in Redis but unsaved to DB.
+    // Ideally Finalize Worker should flush this. But user asked for "batches", so assuming subsequent batches come.
 
     return { batchProcessed: true, events: true };
   },

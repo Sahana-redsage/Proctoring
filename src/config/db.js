@@ -10,4 +10,9 @@ pool.on("connect", () => {
   console.log("✅ PostgreSQL connected");
 });
 
+pool.on("error", (err) => {
+  console.error("❌ PostgreSQL Pool Error:", err);
+  // Prevent process exit on idle client errors
+});
+
 module.exports = pool;
