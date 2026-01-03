@@ -29,10 +29,10 @@ exports.startSession = async (req, res) => {
 exports.uploadChunk = async (req, res) => {
   const {
     sessionId,
-    chunkIndex,
     startTimeSeconds,
     endTimeSeconds
   } = req.body;
+  const chunkIndex = parseInt(req.body.chunkIndex);
 
   if (!req.file) {
     return res.status(400).json({ success: false, message: "No file uploaded" });

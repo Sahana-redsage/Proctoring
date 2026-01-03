@@ -13,7 +13,7 @@ model = YOLO("yolov8n.pt")
 
 cap = cv2.VideoCapture(video_path)
 fps = cap.get(cv2.CAP_PROP_FPS)
-if fps <= 0 or math.isnan(fps): 
+if fps <= 0 or math.isnan(fps) or fps > 120: 
     fps = 30 # Default fallback
 
 detections_per_second = {}

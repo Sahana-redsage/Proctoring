@@ -9,7 +9,7 @@ mp_face_detection = mp.solutions.face_detection
 
 detector = mp_face_detection.FaceDetection(
     model_selection=0,
-    min_detection_confidence=0.5
+    min_detection_confidence=0.6
 )
 
 
@@ -18,8 +18,12 @@ cap = cv2.VideoCapture(video_path)
 face_counts = []
 head_pitches = []
 
-fps = int(cap.get(cv2.CAP_PROP_FPS))
-frame_interval = max(fps, 1)
+fps = cap.get(cv2.CAP_PROP_FPS)
+# WebM from MediaRecorder often reports 1000 FPS (timebase). Standardize.
+if fps <= 0 or fps > 120:
+    fps = 30
+
+frame_interval = max(int(fps), 1)
 
 frame_index = 0
 

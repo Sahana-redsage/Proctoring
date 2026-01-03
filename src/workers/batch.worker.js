@@ -1,8 +1,9 @@
 const { Worker } = require("bullmq");
 const redis = require("../config/redis");
 const pool = require("../config/db");
+const crypto = require("crypto");
 
-console.log("🟡 Batch Worker started (v2 - Status Sync)");
+console.log("🟡 Batch Worker started (v4 - Fixed Event Types)");
 
 new Worker(
   "batchQueue",
@@ -58,11 +59,13 @@ new Worker(
       SELECT *
       FROM proctoring_chunk_signals
       WHERE session_id = $1
-        AND timestamp_seconds BETWEEN $2 AND $3
-      ORDER BY timestamp_seconds
+        AND timestamp_seconds >= $2 AND timestamp_seconds < $3
+      ORDER BY timestamp_seconds ASC
       `,
       [sessionId, fromTime, toTime]
     );
+
+    console.log(`📊 [${sessionId}] Batch ${fromChunkIndex}-${toChunkIndex}: Processing ${signals.length} signals (${fromTime}s - ${toTime}s)`);
 
     // State for multiple event types
     const activeEvents = {};
@@ -74,14 +77,14 @@ new Worker(
         minDuration: 1 // More sensitive for phone
       },
       {
-        type: "FACE_NOT_VISIBLE",
+        type: "NO_FACE",
         check: s => !s.face_present,
         minDuration: 1
       },
       {
-        type: "MULTIPLE_FACES",
+        type: "MULTIPLE_PEOPLE",
         check: s => s.face_count > 1,
-        minDuration: 1
+        minDuration: 0 // Immediate trigger
       },
       {
         type: "LOOKING_AWAY", // Gazing
@@ -110,16 +113,24 @@ new Worker(
     // Helper to insert event
     const saveEvent = async (type, start, end, minDuration) => {
       const duration = end - start;
+      console.log(`📝 [${sessionId}] Candidate Event: ${type} Duration: ${duration}s (${start}-${end}) Min: ${minDuration}`);
+
       if (duration >= minDuration) {
-        await pool.query(
-          `
-          INSERT INTO proctoring_events
-          (id, session_id, event_type, start_time_seconds, end_time_seconds, duration_seconds, confidence_score)
-          VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, 0.8)
-          `,
-          [sessionId, type, start, end, duration]
-        );
-        console.log(`⚠️ [${sessionId}] ${type} detected! Duration: ${duration}s (Time: ${start}-${end})`);
+        try {
+          await pool.query(
+            `
+            INSERT INTO proctoring_events
+            (id, session_id, event_type, start_time_seconds, end_time_seconds, duration_seconds, confidence_score)
+            VALUES ($1, $2, $3, $4, $5, $6, 0.8)
+            `,
+            [crypto.randomUUID(), sessionId, type, start, end, duration]
+          );
+          console.log(`⚠️ [${sessionId}] SAVED: ${type} (${duration}s)`);
+        } catch (err) {
+          console.error(`❌ [${sessionId}] Failed to save event ${type}: ${err.message}`);
+        }
+      } else {
+        console.log(`🗑️ [${sessionId}] Ignored ${type}: Duration ${duration}s < ${minDuration}s`);
       }
     };
 
@@ -130,13 +141,13 @@ new Worker(
         if (isTriggered) {
           if (d.state.start === null) {
             // New Event Start
+            console.log(`🚩 [${sessionId}] Trigger Start: ${d.type} at ${s.timestamp_seconds}`);
             d.state.start = s.timestamp_seconds;
             d.state.last = s.timestamp_seconds;
           } else {
             // Check for data gap (>2 seconds missing)
             if (s.timestamp_seconds - d.state.last > 2) {
-              console.log(`⚠️ [${sessionId}] Gap detected in signal stream (${d.state.last} -> ${s.timestamp_seconds}). Splitting event.`);
-              // Close previous event
+              console.log(`⚠️ [${sessionId}] Gap detected (${d.state.last} -> ${s.timestamp_seconds}). Closing ${d.type}.`);
               await saveEvent(d.type, d.state.start, d.state.last, d.minDuration);
               // Start new event
               d.state.start = s.timestamp_seconds;
@@ -149,6 +160,7 @@ new Worker(
         } else {
           // Condition STOPPED
           if (d.state.start !== null) {
+            console.log(`🛑 [${sessionId}] Trigger Stop: ${d.type} at ${s.timestamp_seconds} (Last: ${d.state.last})`);
             // Check if valid event
             await saveEvent(d.type, d.state.start, d.state.last, d.minDuration);
             // Reset
@@ -159,17 +171,27 @@ new Worker(
       }
     }
 
-    // Save state for next batch (Cross-Batch Persistence)
-    const nextState = {};
-    detectors.forEach(d => {
-      nextState[d.type] = d.state;
-    });
-    await redis.set(stateKey, JSON.stringify(nextState), 'EX', 3600); // 1 hour TTL
-
-    // We do NOT close open-ended events here anymore. 
-    // They will be continued in next batch or closed there.
-    // If this is the absolute last batch, they might remain 'open' in Redis but unsaved to DB.
-    // Ideally Finalize Worker should flush this. But user asked for "batches", so assuming subsequent batches come.
+    // 🛑 Handle open-ended events
+    // If this is the FINAL batch (triggered by finalize worker), we must force-close events.
+    if (job.data.isFinalBatch) {
+      console.log(`🛑 [${sessionId}] Final batch detected. Flushing open events...`);
+      for (const d of detectors) {
+        if (d.state.start !== null) {
+          await saveEvent(d.type, d.state.start, d.state.last, d.minDuration);
+          d.state.start = null;
+          d.state.last = null;
+        }
+      }
+      // Clear Redis state as session is done
+      await redis.del(stateKey);
+    } else {
+      // Save state for next batch (Cross-Batch Persistence)
+      const nextState = {};
+      detectors.forEach(d => {
+        nextState[d.type] = d.state;
+      });
+      await redis.set(stateKey, JSON.stringify(nextState), 'EX', 3600); // 1 hour TTL
+    }
 
     return { batchProcessed: true, events: true };
   },

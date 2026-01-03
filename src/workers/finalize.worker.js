@@ -80,7 +80,17 @@ const worker = new Worker(
         await batchQueue.add("PROCESS_BATCH", {
           sessionId,
           fromChunkIndex: remainderStart,
-          toChunkIndex: totalChunks - 1
+          toChunkIndex: totalChunks - 1,
+          isFinalBatch: true
+        });
+      } else if (totalChunks > 0) {
+        // Aligned perfectly, but we need to run Final Batch to flush events
+        console.log(`🧩 [${sessionId}] Triggering final flush (re-run last batch): ${remainderStart - BATCH_SIZE} → ${remainderStart - 1}`);
+        await batchQueue.add("PROCESS_BATCH", {
+          sessionId,
+          fromChunkIndex: remainderStart - BATCH_SIZE,
+          toChunkIndex: remainderStart - 1,
+          isFinalBatch: true
         });
       }
 
