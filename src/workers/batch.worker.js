@@ -2,6 +2,7 @@ const { Worker } = require("bullmq");
 const redis = require("../config/redis");
 const pool = require("../config/db");
 const crypto = require("crypto");
+const { CHUNK_DURATION_SEC } = require("../config/env");
 
 console.log("🟡 Batch Worker started (v4 - Fixed Event Types)");
 
@@ -14,8 +15,8 @@ new Worker(
       `🧩 Processing batch ${fromChunkIndex} → ${toChunkIndex} for session ${sessionId}`
     );
 
-    const fromTime = fromChunkIndex * 10;
-    const toTime = (toChunkIndex + 1) * 10;
+    const fromTime = fromChunkIndex * CHUNK_DURATION_SEC;
+    const toTime = (toChunkIndex + 1) * CHUNK_DURATION_SEC;
     // const expectedSignals = 30; // Not used anymore
 
     let attempts = 0;

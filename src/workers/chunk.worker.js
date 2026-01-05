@@ -4,6 +4,7 @@ const pool = require("../config/db");
 const { detectFaces, detectObjects } = require("../services/ai.service");
 const { exec } = require("child_process");
 const fs = require("fs");
+const { CHUNK_DURATION_SEC } = require("../config/env");
 
 console.log("🟢 Chunk Worker started");
 
@@ -53,8 +54,8 @@ new Worker(
       [sessionId, chunkIndex]
     );
 
-    const frameCount = 10;
-    const baseTime = chunkIndex * 10;
+    const frameCount = CHUNK_DURATION_SEC; // roughly
+    const baseTime = chunkIndex * CHUNK_DURATION_SEC;
 
     console.log(`🔍 [${sessionId}] Chunk ${chunkIndex}: Finding faces...`);
     const faceData = await detectFaces(filePath);

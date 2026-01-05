@@ -5,6 +5,7 @@ const { exec } = require("child_process");
 const pool = require("../config/db");
 const { uploadToR2 } = require("../services/r2.service");
 const { finalizeQueue, batchQueue, redisConnection } = require("../config/bullmq");
+const { BATCH_SIZE } = require("../config/env");
 
 require("dotenv").config();
 
@@ -69,7 +70,7 @@ const worker = new Worker(
       /**
        * 1.5️⃣ TRIGGER FINAL BATCH (LEFTOVERS)
        */
-      const BATCH_SIZE = 3; // Keep consistent with controller
+      // const BATCH_SIZE = 3; // From env now
       const totalChunks = chunks.length;
 
       // Calculate the starting index for any remaining chunks that didn't form a full batch

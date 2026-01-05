@@ -12,5 +12,9 @@ module.exports = {
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
     bucket: process.env.R2_BUCKET_NAME,
     publicUrl: process.env.R2_PUBLIC_URL
-  }
+  },
+
+  // Proctoring Settings
+  CHUNK_DURATION_SEC: parseInt(process.env.CHUNK_DURATION_SEC || "10"),
+  BATCH_SIZE: parseInt(process.env.BATCH_SIZE || "3")
 };
