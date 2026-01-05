@@ -16,5 +16,6 @@ module.exports = {
 
   // Proctoring Settings
   CHUNK_DURATION_SEC: parseInt(process.env.CHUNK_DURATION_SEC || "10"),
-  BATCH_SIZE: parseInt(process.env.BATCH_SIZE || "3")
+  BATCH_SIZE: parseInt(process.env.BATCH_SIZE || "3"),
+  EVENT_DEBOUNCE_SEC: parseInt(process.env.EVENT_DEBOUNCE_SEC || "5")
 };

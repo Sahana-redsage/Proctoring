@@ -1,11 +1,12 @@
 const { Worker } = require("bullmq");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const { exec } = require("child_process");
 const pool = require("../config/db");
+const redis = require("../config/redis");
 const { uploadToR2 } = require("../services/r2.service");
-const { finalizeQueue, batchQueue, redisConnection } = require("../config/bullmq");
-const { BATCH_SIZE } = require("../config/env");
+const { finalizeQueue, redisConnection, chunkQueue } = require("../config/bullmq");
 
 require("dotenv").config();
 
@@ -35,16 +36,47 @@ const worker = new Worker(
        */
       const { rows: chunks } = await client.query(
         `
-        SELECT id, chunk_index, status, file_path
+        SELECT id, chunk_index, status
         FROM proctoring_chunks
         WHERE session_id = $1
         ORDER BY chunk_index
         `,
-        [sessionId]
+        [sessionId] // No file_path needed from DB since it's 'REDIS'
       );
 
       if (!chunks.length) {
         console.log(`⚠️ [${sessionId}] No chunks found`);
+        return;
+      }
+
+      // 1.5 Handle Stuck "RECEIVED" chunks (Partial Batch Leftovers)
+      const stuckChunks = chunks.filter(c => c.status === "RECEIVED");
+
+      if (stuckChunks.length > 0) {
+        console.log(`🧩 [${sessionId}] Found ${stuckChunks.length} unprocessed pending chunks. Triggering forced processing...`);
+
+        // Group by contiguous chunks or just group all together?
+        // Since valid batches are already processed, these act like the "remainder".
+        // They should ideally be contiguous at the end, but let's be safe.
+        // We will trigger a batch job for the range of these chunks.
+
+        const minIndex = Math.min(...stuckChunks.map(c => c.chunk_index));
+        const maxIndex = Math.max(...stuckChunks.map(c => c.chunk_index));
+
+        /* 
+           We invoke the chunkQueue manually.
+           We assume stuck chunks are the tail end.
+        */
+        const { chunkQueue } = require("../config/bullmq");
+        await chunkQueue.add("PROCESS_BATCH_AI", {
+          sessionId,
+          fromChunkIndex: minIndex,
+          toChunkIndex: maxIndex
+        });
+
+        // Requeue finalize to wait for this new job to finish
+        console.log(`⏳ [${sessionId}] Requeuing finalize to wait for leftovers...`);
+        await finalizeQueue.add("FINALIZE_SESSION", { sessionId }, { delay: 5000, attempts: 10 });
         return;
       }
 
@@ -54,81 +86,56 @@ const worker = new Worker(
 
       if (incomplete) {
         console.log(
-          `⏸️ [${sessionId}] Some chunks still processing. Retrying finalize...`
+          `⏸️ [${sessionId}] Some chunks still processing (PROCESSING status). Retrying finalize...`
         );
-
-        // 🔁 Requeue finalize with delay
         await finalizeQueue.add(
           "FINALIZE_SESSION",
           { sessionId },
           { delay: 5000, attempts: 10 }
         );
-
         return;
       }
 
       /**
-       * 1.5️⃣ TRIGGER FINAL BATCH (LEFTOVERS)
+       * 2️⃣ DOWNLOAD CHUNKS FROM REDIS & PREPARE FOR MERGE
        */
-      // const BATCH_SIZE = 3; // From env now
-      const totalChunks = chunks.length;
-
-      // Calculate the starting index for any remaining chunks that didn't form a full batch
-      const remainderStart = Math.floor(totalChunks / BATCH_SIZE) * BATCH_SIZE;
-
-      if (remainderStart < totalChunks) {
-        console.log(`🧩 [${sessionId}] Triggering final batch for leftovers: ${remainderStart} → ${totalChunks - 1}`);
-        await batchQueue.add("PROCESS_BATCH", {
-          sessionId,
-          fromChunkIndex: remainderStart,
-          toChunkIndex: totalChunks - 1,
-          isFinalBatch: true
-        });
-      } else if (totalChunks > 0) {
-        // Aligned perfectly, but we need to run Final Batch to flush events
-        console.log(`🧩 [${sessionId}] Triggering final flush (re-run last batch): ${remainderStart - BATCH_SIZE} → ${remainderStart - 1}`);
-        await batchQueue.add("PROCESS_BATCH", {
-          sessionId,
-          fromChunkIndex: remainderStart - BATCH_SIZE,
-          toChunkIndex: remainderStart - 1,
-          isFinalBatch: true
-        });
-      }
-
-      /**
-       * 2️⃣ PREPARE CONCAT FILE FOR FFMPEG
-       */
-      const mergeDir = path.join(
-        process.cwd(),
-        "tmp",
-        "merge"
-      );
-
+      const mergeDir = path.join(os.tmpdir(), "proctoring_merge", sessionId);
       if (!fs.existsSync(mergeDir)) {
         fs.mkdirSync(mergeDir, { recursive: true });
       }
 
-      const concatFile = path.join(
-        mergeDir,
-        `${sessionId}_concat.txt`
-      );
+      const chunkFiles = [];
 
-      const concatContent = chunks
-        .map(c => `file '${c.file_path.replace(/\\/g, "/")}'`)
+      console.log(`📥 [${sessionId}] Fetching ${chunks.length} chunks from Redis...`);
+
+      for (const c of chunks) {
+        const redisKey = `session:${sessionId}:chunk:${c.chunk_index}`;
+        const buffer = await redis.getBuffer(redisKey);
+
+        if (!buffer) {
+          console.warn(`⚠️ [${sessionId}] Chunk ${c.chunk_index} missing in Redis! Skipping...`);
+          continue;
+        }
+
+        const chunkPath = path.join(mergeDir, `chunk_${c.chunk_index}.webm`);
+        fs.writeFileSync(chunkPath, buffer);
+        chunkFiles.push(chunkPath);
+      }
+
+      const concatFile = path.join(mergeDir, `concat.txt`);
+      const concatContent = chunkFiles
+        .map(p => `file '${p.replace(/\\/g, "/")}'`)
         .join("\n");
 
       fs.writeFileSync(concatFile, concatContent);
 
       /**
-       * 3️⃣ MERGE VIDEO USING FFMPEG (NO RE-ENCODE)
+       * 3️⃣ MERGE VIDEO USING FFMPEG
        */
-      const outputFile = path.join(
-        mergeDir,
-        `${sessionId}_final.webm`
-      );
+      const outputFile = path.join(mergeDir, `final.webm`);
 
       console.log(
-        `⏳ [${sessionId}] Starting video merge of ${chunks.length} chunks...`
+        `⏳ [${sessionId}] Starting video merge...`
       );
 
       await run(
@@ -136,72 +143,48 @@ const worker = new Worker(
       );
 
       console.log(
-        `🎞️ [${sessionId}] Video merged successfully at ${outputFile}`
+        `🎞️ [${sessionId}] Video merged successfully`
       );
 
       /**
        * 4️⃣ UPLOAD TO CLOUDFLARE R2
        */
       const r2Key = `proctoring/${sessionId}.webm`;
-
-      console.log(
-        `📤 [${sessionId}] Uploading to R2 (${r2Key})...`
-      );
+      console.log(`📤 [${sessionId}] Uploading to R2...`);
 
       const finalVideoUrl = await uploadToR2(
         outputFile,
         r2Key
       );
 
-      console.log(
-        `☁️ [${sessionId}] Uploaded to R2: ${finalVideoUrl}`
-      );
+      console.log(`☁️ [${sessionId}] Uploaded: ${finalVideoUrl}`);
 
       /**
-       * 5️⃣ UPDATE SESSION RECORD
+       * 5️⃣ UPDATE SESSION & CLEANUP REDIS
        */
       await client.query(
-        `
-        UPDATE proctoring_sessions
-        SET
-          final_video_url = $1,
-          status = 'DONE',
-          ended_at = NOW()
-        WHERE id = $2
-        `,
+        `UPDATE proctoring_sessions SET final_video_url = $1, status = 'DONE', ended_at = NOW() WHERE id = $2`,
         [finalVideoUrl, sessionId]
       );
 
-      console.log(
-        `💾 [${sessionId}] Database updated with final video URL`
-      );
+      // Delete chunks from Redis
+      console.log(`🧹 [${sessionId}] Cleaning up Redis keys...`);
+      for (const c of chunks) {
+        await redis.del(`session:${sessionId}:chunk:${c.chunk_index}`);
+      }
+      // Also delete event keys if any?
+      // await redis.del(`session:${sessionId}:last_event:PHONE_USAGE`);
+      // Keeping event keys till TTL/Eviction assumes they are small enough or let them expire.
 
       /**
-       * 6️⃣ CLEANUP TEMP FILES
+       * 6️⃣ CLEANUP LOCAL FILES
        */
-      console.log(
-        `🧹 [${sessionId}] Cleaning up local files...`
-      );
+      fs.rmSync(mergeDir, { recursive: true, force: true });
 
-      /*
-      for (const c of chunks) {
-        if (fs.existsSync(c.file_path)) {
-          fs.unlinkSync(c.file_path);
-        }
-      }
+      console.log(`✅ [${sessionId}] Finalized successfully`);
 
-      if (fs.existsSync(concatFile)) fs.unlinkSync(concatFile);
-      // if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile); // Keep output too? Well output is uploaded.
-      */
-
-      console.log(
-        `✅ [${sessionId}] Session finalized successfully`
-      );
     } catch (err) {
-      console.error(
-        `❌ [${sessionId}] Finalize failed:`,
-        err
-      );
+      console.error(`❌ [${sessionId}] Finalize failed:`, err);
       throw err;
     } finally {
       client.release();

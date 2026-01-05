@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require("uuid");
 const pool = require("../config/db");
-const { chunkQueue, batchQueue, finalizeQueue } = require("../config/bullmq");
+const redis = require("../config/redis");
+const { chunkQueue, finalizeQueue } = require("../config/bullmq");
 const { BATCH_SIZE } = require("../config/env");
 
 
@@ -27,6 +28,7 @@ exports.startSession = async (req, res) => {
 };
 
 // 2️⃣ UPLOAD CHUNK
+// 2️⃣ UPLOAD CHUNK (REDIS STORAGE)
 exports.uploadChunk = async (req, res) => {
   const {
     sessionId,
@@ -39,37 +41,35 @@ exports.uploadChunk = async (req, res) => {
     return res.status(400).json({ success: false, message: "No file uploaded" });
   }
 
-  const filePath = req.file.path;
+  // Store in Redis (Buffer)
+  const redisKey = `session:${sessionId}:chunk:${chunkIndex}`;
+  await redis.setex(redisKey, 7200, req.file.buffer);
 
-  // Insert chunk metadata
+  // Insert chunk metadata (filePath is now 'REDIS')
   await pool.query(
     `
     INSERT INTO proctoring_chunks
     (session_id, chunk_index, start_time_seconds, end_time_seconds, file_path, status)
-    VALUES ($1, $2, $3, $4, $5, 'RECEIVED')
+    VALUES ($1, $2, $3, $4, 'REDIS', 'RECEIVED')
     ON CONFLICT (session_id, chunk_index) DO NOTHING
     `,
     [
       sessionId,
       chunkIndex,
       startTimeSeconds,
-      endTimeSeconds,
-      filePath
+      endTimeSeconds
     ]
   );
 
-  // Push chunk job
-  await chunkQueue.add("PROCESS_CHUNK", {
-    sessionId,
-    chunkIndex,
-    filePath
-  });
-
-  // Batch trigger
+  // OPTIMIZATION: Only trigger AI processing every BATCH_SIZE chunks
+  // For BATCH_SIZE=3, triggers at index 2, 5, 8... (0-indexed)
   if ((chunkIndex + 1) % BATCH_SIZE === 0) {
-    await batchQueue.add("PROCESS_BATCH", {
+    const fromIndex = chunkIndex - (BATCH_SIZE - 1);
+    console.log(`🚀 [${sessionId}] Batch Complete (${fromIndex}-${chunkIndex}). Queuing AI Job.`);
+
+    await chunkQueue.add("PROCESS_BATCH_AI", {
       sessionId,
-      fromChunkIndex: chunkIndex - (BATCH_SIZE - 1),
+      fromChunkIndex: fromIndex,
       toChunkIndex: chunkIndex
     });
   }
