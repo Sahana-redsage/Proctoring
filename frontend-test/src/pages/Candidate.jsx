@@ -1,11 +1,13 @@
 import { useState } from "react";
 import VideoRecorder from "../components/VideoRecorder";
+import FaceCapture from "../components/FaceCapture";
 import { startSession, completeSession } from "../api";
 
 export default function Candidate() {
   const [sessionId, setSessionId] = useState(null);
   const [isExamEnded, setIsExamEnded] = useState(false);
   const [isStarted, setIsStarted] = useState(false);
+  const [isVerified, setIsVerified] = useState(false);
 
   async function startExam() {
     try {
@@ -46,15 +48,20 @@ export default function Candidate() {
         <>
           <p><strong>Session:</strong> {sessionId}</p>
 
-          <VideoRecorder
-            sessionId={sessionId}
-            isExamEnded={isExamEnded}
-          />
-
-          {!isExamEnded && (
-            <button onClick={endExam}>
-              ⛔ End Exam
-            </button>
+          {!isVerified ? (
+            <FaceCapture sessionId={sessionId} onVerified={() => setIsVerified(true)} />
+          ) : (
+            <>
+              <VideoRecorder
+                sessionId={sessionId}
+                isExamEnded={isExamEnded}
+              />
+              {!isExamEnded && (
+                <button onClick={endExam}>
+                  ⛔ End Exam
+                </button>
+              )}
+            </>
           )}
         </>
       )}

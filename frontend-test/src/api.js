@@ -19,6 +19,14 @@ export async function uploadChunk(formData) {
   });
 }
 
+export async function uploadReferenceImage(formData) {
+  const res = await fetch(`${BASE}/session/reference-image`, {
+    method: "POST",
+    body: formData
+  });
+  return res.json();
+}
+
 export async function completeSession(sessionId) {
   return fetch(`${BASE}/session/complete`, {
     method: "POST",

@@ -53,6 +53,12 @@ const worker = new Worker(
       const stuckChunks = chunks.filter(c => c.status === "RECEIVED");
 
       if (stuckChunks.length > 0) {
+        if (job.attemptsMade < 3) {
+          console.log(`⏳ [${sessionId}] Waiting for chunks to be processed naturally (Attempt ${job.attemptsMade + 1})...`);
+          await finalizeQueue.add("FINALIZE_SESSION", { sessionId }, { delay: 5000, attempts: 10 });
+          return;
+        }
+
         console.log(`🧩 [${sessionId}] Found ${stuckChunks.length} unprocessed pending chunks. Triggering forced processing...`);
 
         // Group by contiguous chunks or just group all together?
@@ -72,6 +78,9 @@ const worker = new Worker(
           sessionId,
           fromChunkIndex: minIndex,
           toChunkIndex: maxIndex
+        }, {
+          jobId: `batch:${sessionId}:${minIndex}-${maxIndex}`, // Dedup?
+          removeOnComplete: true
         });
 
         // Requeue finalize to wait for this new job to finish
@@ -168,10 +177,10 @@ const worker = new Worker(
       );
 
       // Delete chunks from Redis
-      console.log(`🧹 [${sessionId}] Cleaning up Redis keys...`);
-      for (const c of chunks) {
-        await redis.del(`session:${sessionId}:chunk:${c.chunk_index}`);
-      }
+      // console.log(`🧹 [${sessionId}] Cleaning up Redis keys...`);
+      // for (const c of chunks) {
+      //   await redis.del(`session:${sessionId}:chunk:${c.chunk_index}`);
+      // }
       // Also delete event keys if any?
       // await redis.del(`session:${sessionId}:last_event:PHONE_USAGE`);
       // Keeping event keys till TTL/Eviction assumes they are small enough or let them expire.

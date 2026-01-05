@@ -5,6 +5,7 @@ const { detectFaces, detectObjects } = require("../services/ai.service");
 const { exec } = require("child_process");
 const fs = require("fs");
 const { CHUNK_DURATION_SEC } = require("../config/env");
+const ffmpeg = require("fluent-ffmpeg");
 
 console.log("🟢 Chunk Worker started");
 
@@ -27,17 +28,32 @@ new Worker(
       const path = require("path");
       const os = require("os");
 
+      const { REDIS_URL } = require("../config/env");
+      const IORedis = require("ioredis");
+
+      // Create a dedicated Redis connection for data fetching (avoid BullMQ conflict)
+      const dataRedis = new IORedis(REDIS_URL);
+
+      console.log(`[DEBUG] Data Redis Status: ${dataRedis.status}`);
+
       console.log(`🚀 Processing AI Batch: Chunks ${fromChunkIndex} → ${toChunkIndex} (Session: ${sessionId})`);
 
-      // 1. Fetch ALL chunks in range from Redis
+      // 1. Fetch ALL chunks
+      console.log(`[DEBUG] Fetching chunks from Redis...`);
       const chunkFiles = [];
       const batchDir = path.join(os.tmpdir(), `${sessionId}_batch_${fromChunkIndex}`);
       if (!fs.existsSync(batchDir)) fs.mkdirSync(batchDir, { recursive: true });
 
       try {
+        console.log("[DEBUG] Entering fetch loop");
         for (let i = fromChunkIndex; i <= toChunkIndex; i++) {
           const redisKey = `session:${sessionId}:chunk:${i}`;
-          const buffer = await redis.getBuffer(redisKey);
+          console.log(`[DEBUG] Fetching key: ${redisKey}`);
+
+          // USE DEDICATED HOST
+          const buffer = await dataRedis.getBuffer(redisKey);
+          console.log(`[DEBUG] Key fetched. Buffer size: ${buffer ? buffer.length : 'null'}`);
+
           if (buffer) {
             const p = path.join(batchDir, `part_${i}.webm`);
             fs.writeFileSync(p, buffer);
@@ -46,38 +62,71 @@ new Worker(
             console.warn(`⚠️ Batch ${fromChunkIndex}-${toChunkIndex}: Missing chunk ${i} in Redis.`);
           }
         }
+        console.log("[DEBUG] Fetch loop done");
 
         if (chunkFiles.length === 0) {
           console.error("❌ No chunks found for batch. Aborting.");
           return;
         }
 
-        // 2. Merge Chunks into one 'Batch Video'
+        // 2. Merge Chunks
+        console.log(`[DEBUG] Merging ${chunkFiles.length} chunks...`);
         const concatFile = path.join(batchDir, "concat.txt");
         const joinedContent = chunkFiles.map(f => `file '${f.replace(/\\/g, "/")}'`).join('\n');
         fs.writeFileSync(concatFile, joinedContent);
 
         const batchVideoPath = path.join(batchDir, "batch_full.webm");
-        // Fast concat
         await run(`ffmpeg -y -f concat -safe 0 -i "${concatFile}" -c copy "${batchVideoPath}"`);
+        console.log(`[DEBUG] Merge complete.`);
+
+        // Fetch Reference Face (Identity Check)
+        console.log(`[DEBUG] Checking for reference face...`);
+        const refKey = `session:${sessionId}:reference_face`;
+        const refBuffer = await dataRedis.getBuffer(refKey);
+
+        let refPath = null;
+        if (refBuffer) {
+          refPath = path.join(batchDir, 'reference.jpg');
+          fs.writeFileSync(refPath, refBuffer);
+          console.log(`📸 [${sessionId}] Reference face found, verification enabled.`);
+        }
 
         // 3. Run AI on the BATCH video
         console.log(`🔍 [${sessionId}] running AI on ${chunkFiles.length} chunks...`);
         const [faceData, objectData] = await Promise.all([
-          detectFaces(batchVideoPath),
+          detectFaces(batchVideoPath, refPath),
           detectObjects(batchVideoPath)
         ]);
+
 
         // 4. Calculate Timestamps
         // The AI result is now for the WHOLE batch video (e.g. 0s to 30s).
         // We need to map this back to absolute session time.
-        // Base time is start of 'fromChunkIndex'.
-        const startOfBatch = fromChunkIndex * CHUNK_DURATION_SEC;
+        // Base time is start        // 4. Get Actual Video Duration for Accurate Timing
+        const { duration: actualDuration } = await new Promise((resolve) => {
+          ffmpeg.ffprobe(batchVideoPath, (err, metadata) => {
+            if (err) resolve({ duration: (toChunkIndex - fromChunkIndex + 1) * CHUNK_DURATION_SEC });
+            else resolve({ duration: metadata.format.duration });
+          });
+        });
 
         const frameCount = Math.max(faceData.faceCounts.length, objectData.phoneDetected.length);
+        const fps = frameCount / actualDuration;
+
+        console.log(`⏱ [${sessionId}] Batch Info: Duration=${actualDuration}s, Frames=${frameCount}, FPS=${fps.toFixed(2)}`);
+
+        // Start time based on configuration (best effort for batch start)
+        // OR: accumulated duration if we tracked it, but for now config is safest base.
+        const startOfBatch = fromChunkIndex * CHUNK_DURATION_SEC;
 
         for (let i = 0; i < frameCount; i++) {
-          const timestamp = startOfBatch + i;
+          // Current second relative to batch start
+          let timeOffset = Math.floor(i / fps);
+
+          // Cap offset to batch duration to prevent overflow
+          if (timeOffset > actualDuration) timeOffset = Math.floor(actualDuration);
+
+          const timestamp = startOfBatch + timeOffset;
 
           // --- DETECTIONS START ---
           const events = [];
@@ -93,6 +142,11 @@ new Worker(
           // Gaze
           const yaw = Math.abs(faceData.headPitch[i] || 0);
           if (c === 1 && yaw > 0.5) events.push({ type: 'LOOKING_AWAY', confidence: 0.8 });
+
+          // Identity Mismatch
+          if (faceData.mismatches && faceData.mismatches[i]) {
+            events.push({ type: 'IDENTITY_MISMATCH', confidence: 0.95 });
+          }
 
           // --- DEBOUNCE LOGIC ---
           for (const ev of events) {
@@ -112,7 +166,17 @@ new Worker(
           }
         }
 
-        // 5. Mark chunks as PROCESSED
+        // 5. Correct DB Metadata (End Time) for single chunks
+        if (fromChunkIndex === toChunkIndex) {
+          const correctEndTime = startOfBatch + actualDuration;
+          await pool.query(
+            "UPDATE proctoring_chunks SET end_time_seconds = $1 WHERE session_id = $2 AND chunk_index = $3",
+            [Math.round(correctEndTime), sessionId, fromChunkIndex]
+          );
+          console.log(`⏱ [${sessionId}] Corrected DB end_time for chunk ${fromChunkIndex} to ${Math.round(correctEndTime)}s`);
+        }
+
+        // 6. Mark chunks as PROCESSED
         console.log(`💾 [${sessionId}] Updating status for chunks ${fromChunkIndex}-${toChunkIndex} to PROCESSED...`);
         for (let i = fromChunkIndex; i <= toChunkIndex; i++) {
           await pool.query(
@@ -126,6 +190,7 @@ new Worker(
         console.error(`❌ [${sessionId}] Error in Batch AI Process:`, err);
         throw err;
       } finally {
+        dataRedis.quit(); // Close dedicated connection
         // Cleanup batch dir (Robust)
         try {
           if (fs.existsSync(batchDir)) {
@@ -140,9 +205,13 @@ new Worker(
       }
       return { msg: "Batch Processed" };
 
-    } else {
       console.log("Ignoring single chunk job preference for batching.");
     }
   },
-  { connection: redis, concurrency: 5 }
+  {
+    connection: redis,
+    concurrency: 1, // Reduce CPU load to prevent timeouts
+    lockDuration: 120000 // Increase lock time for heavy AI jobs
+  }
 );
+

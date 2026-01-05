@@ -6,6 +6,8 @@ export default function VideoRecorder({ sessionId, isExamEnded }) {
   const streamRef = useRef(null);
   const chunkIndexRef = useRef(0);
   const startedRef = useRef(false); // prevents double init
+  const recordingStartTimeRef = useRef(null);
+  const lastChunkEndTimeRef = useRef(0);
 
   // ✅ SAFE STOP FUNCTION (never crashes)
   const stopRecording = () => {
@@ -40,6 +42,7 @@ export default function VideoRecorder({ sessionId, isExamEnded }) {
       .getUserMedia({ video: true, audio: false })
       .then(stream => {
         streamRef.current = stream;
+        recordingStartTimeRef.current = Date.now();
 
         const recorder = new MediaRecorder(stream, {
           mimeType: "video/webm"
@@ -49,21 +52,38 @@ export default function VideoRecorder({ sessionId, isExamEnded }) {
 
         // Helper to handle upload
         const handleDataAvailable = async (e) => {
-          if (isExamEnded) return;
+          // Allow final chunk to upload even if isExamEnded is true
           if (!e.data || e.data.size === 0) return;
+
+          const CHUNK_DURATION = 30; // 30 Seconds
+
+          const currentIndex = chunkIndexRef.current;
+          chunkIndexRef.current += 1; // Increment immediately
+
+          const now = Date.now();
+          // Calculate precise duration based on elapsed time since start
+          const elapsedSeconds = (now - (recordingStartTimeRef.current || now)) / 1000;
+
+          let startTime = lastChunkEndTimeRef.current;
+          let endTime = elapsedSeconds;
+
+          // Guard against erratic timers (ensure at least some duration)
+          if (endTime <= startTime) endTime = startTime + 0.1;
+
+          lastChunkEndTimeRef.current = endTime;
 
           const form = new FormData();
           form.append("sessionId", sessionId);
-          form.append("chunkIndex", chunkIndexRef.current);
-          form.append("startTimeSeconds", chunkIndexRef.current * 10);
-          form.append("endTimeSeconds", (chunkIndexRef.current + 1) * 10);
+          form.append("chunkIndex", currentIndex);
+          form.append("startTimeSeconds", startTime);
+          form.append("endTimeSeconds", endTime);
           form.append("video", e.data);
 
           try {
             await uploadChunk(form);
-            chunkIndexRef.current += 1;
+            console.log(`Chunk ${currentIndex} uploaded (${startTime.toFixed(1)}s - ${endTime.toFixed(1)}s)`);
           } catch (err) {
-            console.error("Upload failed", err);
+            console.error(`Chunk ${currentIndex} upload failed`, err);
           }
         };
 
@@ -72,18 +92,19 @@ export default function VideoRecorder({ sessionId, isExamEnded }) {
         // Start initial recording
         recorder.start();
 
-        // Restart recording every 10 seconds to ensure valid WebM headers for each chunk
+        // Restart recording every 30 seconds to ensure valid WebM headers for each chunk
         const interval = setInterval(() => {
           if (recorder.state === "recording") {
             recorder.stop();
-            // Tiny delay to ensure stop processes and we start a fresh segment
+            // Tiny delay/async restart handled in stop callback logic if needed, 
+            // but here we just restart.
             setTimeout(() => {
               if (recorder.state === "inactive" && !isExamEnded) {
                 recorder.start();
               }
-            }, 50);
+            }, 100);
           }
-        }, 10000);
+        }, 30000);
 
         // Store interval to clear on unmount
         recorderRef.current.interval = interval;

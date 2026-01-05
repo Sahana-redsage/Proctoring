@@ -8,8 +8,9 @@ export default function EventTimeline({ events }) {
     video.play();
 
     // Stop exactly at flagged end
-    const durationMs =
-      (event.endTimeSeconds - event.startTimeSeconds) * 1000;
+    // Stop exactly at flagged end (or default 5s if unknown)
+    const end = event.endTimeSeconds || (event.startTimeSeconds + 5);
+    const durationMs = (end - event.startTimeSeconds) * 1000;
 
     setTimeout(() => {
       video.pause();
@@ -24,7 +25,12 @@ export default function EventTimeline({ events }) {
           <li key={i}>
             <strong>{e.eventType}</strong> – {e.message}
             <br />
-            ⏱ {e.startTimeSeconds}s → {e.endTimeSeconds}s
+            <br />
+            {e.endTimeSeconds ? (
+              <span>⏱ {e.startTimeSeconds}s → {e.endTimeSeconds}s</span>
+            ) : (
+              <span>⏱ At {e.startTimeSeconds}s</span>
+            )}
             <br />
             <button onClick={() => playEvent(e)}>
               ▶ Play Flagged Segment

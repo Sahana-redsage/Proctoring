@@ -8,9 +8,11 @@ const PYTHON_PATH = path.join(
   "python.exe"
 );
 
-function runPython(script, videoPath) {
+function runPython(script, args) {
   return new Promise((resolve, reject) => {
-    const process = spawn(PYTHON_PATH, [script, videoPath]);
+    // Ensure args is array
+    const argList = Array.isArray(args) ? args : [args];
+    const process = spawn(PYTHON_PATH, [script, ...argList]);
 
     let output = "";
     let errorOutput = "";
@@ -46,10 +48,13 @@ function runPython(script, videoPath) {
   });
 }
 
-async function detectFaces(videoPath) {
+async function detectFaces(videoPath, refImagePath = null) {
+  const args = [videoPath];
+  if (refImagePath) args.push(refImagePath);
+
   return runPython(
     path.join(process.cwd(), "src", "ai", "detect_faces.py"),
-    videoPath
+    args
   );
 }
 

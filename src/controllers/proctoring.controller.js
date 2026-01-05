@@ -27,13 +27,26 @@ exports.startSession = async (req, res) => {
   res.json({ success: true, sessionId });
 };
 
+// 1.5 UPLOAD REFERENCE IMAGE
+exports.uploadReferenceImage = async (req, res) => {
+  const { sessionId } = req.body;
+  if (!req.file || !sessionId) {
+    return res.status(400).json({ success: false, message: "Missing image or session ID" });
+  }
+
+  // Store in Redis with long TTL
+  const redisKey = `session:${sessionId}:reference_face`;
+  await redis.setex(redisKey, 7200, req.file.buffer);
+
+  console.log(`📸 [${sessionId}] Reference face saved to Redis.`);
+  res.json({ success: true, message: "Reference face saved" });
+};
+
 // 2️⃣ UPLOAD CHUNK
 // 2️⃣ UPLOAD CHUNK (REDIS STORAGE)
 exports.uploadChunk = async (req, res) => {
   const {
-    sessionId,
-    startTimeSeconds,
-    endTimeSeconds
+    sessionId
   } = req.body;
   const chunkIndex = parseInt(req.body.chunkIndex);
 
@@ -41,7 +54,13 @@ exports.uploadChunk = async (req, res) => {
     return res.status(400).json({ success: false, message: "No file uploaded" });
   }
 
+  const startTimeSeconds = Math.round(parseFloat(req.body.startTimeSeconds));
+  const endTimeSeconds = Math.round(parseFloat(req.body.endTimeSeconds));
+
+  console.log(`📤 [${sessionId}] Received Chunk ${chunkIndex} (${startTimeSeconds}s - ${endTimeSeconds}s)`);
+
   // Store in Redis (Buffer)
+  // Set TTL to 2 hours (7200 sec) to clean up abandoned sessions
   const redisKey = `session:${sessionId}:chunk:${chunkIndex}`;
   await redis.setex(redisKey, 7200, req.file.buffer);
 
@@ -71,6 +90,10 @@ exports.uploadChunk = async (req, res) => {
       sessionId,
       fromChunkIndex: fromIndex,
       toChunkIndex: chunkIndex
+    }, {
+      jobId: `batch:${sessionId}:${fromIndex}`, // Prevent duplicates
+      removeOnComplete: true, // Keep Redis clean
+      removeOnFail: 500 // Keep last 500 failed jobs for debugging
     });
   }
 
