@@ -95,17 +95,22 @@ exports.uploadChunk = async (req, res) => {
   // For BATCH_SIZE=3, triggers at index 2, 5, 8... (0-indexed)
   if ((chunkIndex + 1) % BATCH_SIZE === 0) {
     const fromIndex = chunkIndex - (BATCH_SIZE - 1);
-    console.log(`🚀 [${sessionId}] Batch Complete (${fromIndex}-${chunkIndex}). Queuing AI Job.`);
+    console.log(`🚀 [${sessionId}] Batch Triggered! Index: ${chunkIndex}, BATCH_SIZE: ${BATCH_SIZE}, Batch Range: ${fromIndex}-${chunkIndex}`);
 
-    await chunkQueue.add("PROCESS_BATCH_AI", {
-      sessionId,
-      fromChunkIndex: fromIndex,
-      toChunkIndex: chunkIndex
-    }, {
-      jobId: `batch:${sessionId}:${fromIndex}`, // Prevent duplicates
-      removeOnComplete: true, // Keep Redis clean
-      removeOnFail: 500 // Keep last 500 failed jobs for debugging
-    });
+    try {
+      await chunkQueue.add("PROCESS_BATCH_AI", {
+        sessionId,
+        fromChunkIndex: fromIndex,
+        toChunkIndex: chunkIndex
+      }, {
+        jobId: `batch:${sessionId}:${fromIndex}`, // Prevent duplicates
+        removeOnComplete: true, // Keep Redis clean
+        removeOnFail: 500 // Keep last 500 failed jobs for debugging
+      });
+      console.log(`✅ [${sessionId}] Job added to queue: batch:${sessionId}:${fromIndex}`);
+    } catch (err) {
+      console.error(`❌ [${sessionId}] Failed to add job to queue:`, err);
+    }
   }
 
   res.json({ success: true, chunkIndex });

@@ -53,11 +53,10 @@ const worker = new Worker(
       const stuckChunks = chunks.filter(c => c.status === "RECEIVED");
 
       if (stuckChunks.length > 0) {
-        if (job.attemptsMade < 3) {
-          console.log(`⏳ [${sessionId}] Waiting for chunks to be processed naturally (Attempt ${job.attemptsMade + 1})...`);
-          await finalizeQueue.add("FINALIZE_SESSION", { sessionId }, { delay: 5000, attempts: 10 });
-          return;
-        }
+        // Removed "wait naturally" logic because once Finalize starts, the exam is over.
+        // Any RECEIVED chunks are definitely leftovers (orphans) that didn't form a full batch.
+        // We must force-process them immediately.
+
 
         console.log(`🧩 [${sessionId}] Found ${stuckChunks.length} unprocessed pending chunks. Triggering forced processing...`);
 

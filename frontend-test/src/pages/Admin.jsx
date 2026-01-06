@@ -49,16 +49,33 @@ export default function Admin() {
       {/* REVIEW PANEL */}
       {reviewData && (
         <div>
-          <h3>Exam Video</h3>
+          <h3>Exam Video Review</h3>
 
-          <video
-            id="video"
-            width="700"
-            controls
-            src={reviewData.session.finalVideoUrl}
-          />
+          <div style={{ display: "flex", gap: "20px", alignItems: "flex-start" }}>
+            {/* LEFT: VIDEO PLAYER */}
+            <div style={{ flex: "0 0 700px" }}>
+              <video
+                id="video"
+                width="100%"
+                controls
+                src={reviewData.session.finalVideoUrl}
+                style={{ borderRadius: "8px", border: "1px solid #ccc", display: "block" }}
+              />
+            </div>
 
-          <EventTimeline events={reviewData.events} />
+            {/* RIGHT: SCROLLABLE EVENTS SIDEBAR */}
+            <div style={{
+              flex: 1,
+              height: "500px",
+              overflowY: "auto",
+              border: "1px solid #ddd",
+              borderRadius: "8px",
+              padding: "10px",
+              backgroundColor: "#f9f9f9"
+            }}>
+              <EventTimeline events={reviewData.events} />
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -42,7 +42,7 @@ while cap.isOpened():
                     name = model.names[cls]
                     
                     # Check for phone-related objects
-                    if name in ["cell phone", "mobile phone", "telephone", "book"]: 
+                    if name in ["cell phone", "mobile phone", "telephone"]: 
                          # Added 'book' back just in case, but focused on phone.
                         found_phone = True
                         print(f"DEBUG: Frame {frame_index} (Sec {current_second}): detected {name} ({float(box.conf[0]):.2f})", file=sys.stderr)
