@@ -2,29 +2,32 @@ import sys
 import json
 import cv2
 import mediapipe as mp
+import numpy as np
 
 video_path = sys.argv[1]
 ref_image_path = sys.argv[2] if len(sys.argv) > 2 else None
 
 # Check if verification is needed
 verify_identity = False
-ref_encoding = None
+ref_image_bgr = None
 
 if ref_image_path:
     try:
-        import face_recognition
-        import numpy as np
+        from deepface import DeepFace
         print(f"DEBUG: Loading reference image from {ref_image_path}", file=sys.stderr)
-        ref_image = face_recognition.load_image_file(ref_image_path)
-        encodings = face_recognition.face_encodings(ref_image)
-        if len(encodings) > 0:
-            ref_encoding = encodings[0]
+        # DeepFace handles loading internally usually, but for consistency we can load it to check validity
+        # But wait, DeepFace.verify accepts paths OR numpy arrays.
+        # Let's load it as numpy array to avoid file I/O every frame.
+        ref_image_bgr = cv2.imread(ref_image_path)
+        if ref_image_bgr is not None:
             verify_identity = True
-            print("DEBUG: Reference face encoding successful", file=sys.stderr)
+            print("DEBUG: Reference face loaded for DeepFace.", file=sys.stderr)
+            # Pre-warm or check? 
+            # DeepFace.extract_faces(img_path=ref_image_bgr)
         else:
-            print("DEBUG: No face found in reference image!", file=sys.stderr)
+            print("DEBUG: Could not read reference image!", file=sys.stderr)
     except ImportError:
-        print("DEBUG: face_recognition library not found. Skipping verification.", file=sys.stderr)
+        print("DEBUG: deepface library not found. Skipping verification.", file=sys.stderr)
     except Exception as e:
         print(f"DEBUG: Error loading reference face: {e}", file=sys.stderr)
 
@@ -48,6 +51,7 @@ while cap.isOpened():
     if not ret: break
 
     if frame_index % frame_interval == 0:
+        # MediaPipe needs RGB
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = detector.process(rgb)
         
@@ -69,37 +73,41 @@ while cap.isOpened():
             
             head_pitches.append(yaw)
             
-            # 2. Identity Verification (face_recognition)
-            # OPTIMIZATION: Only check identity if exactly ONE face is present.
-            # If 0 faces -> NO_FACE event handles it.
-            # If >1 faces -> MULTIPLE_PEOPLE event handles it.
+            # 2. Identity Verification (DeepFace)
+            # Only verify if we have 1 face and identity is enabled
             if verify_identity and count == 1:
                 try:
-                    # MediaPipe detected a face, now verify it
-                    # face_recognition expects RGB
-                    # We use 'hog' model which is faster than cnn
-                    encodings = face_recognition.face_encodings(rgb)
-                    if len(encodings) > 0:
-                        # Compare with reference
-                        # tolerance=0.6 is default
-                        match = face_recognition.compare_faces([ref_encoding], encodings[0], tolerance=0.6)[0]
-                        if not match:
-                            is_mismatch = True
-                            print(f"DEBUG: Frame {frame_index}: Identity Mismatch!", file=sys.stderr)
-                        else:
-                            print(f"DEBUG: Frame {frame_index}: Face Match Verified.", file=sys.stderr)
+                    # DeepFace.verify expects BGR if passing numpy array (OpenCV standard)
+                    # or path. We have 'frame' which is BGR.
+                    # enforce_detection=False because we already detected face with MediaPipe?
+                    # No, let DeepFace detect/align for better accuracy.
+                    # Use a lightweight model like "ArcFace" or "VGG-Face" (default).
+                    # 'opencv' backend is fast but less accurate detection.
+                    # 'ssd' is good.
+                    
+                    # NOTE: This might be SLOW on CPU. But we only run it once per second (frame_interval).
+                    
+                    obj = DeepFace.verify(
+                        img1_path = frame, 
+                        img2_path = ref_image_bgr, 
+                        model_name = "VGG-Face", # Robust
+                        detector_backend = "opencv", # Fast
+                        enforce_detection = False, # Prevent crash if DeepFace detector misses but MediaPipe hit
+                        distance_metric = "cosine"
+                    )
+                    
+                    if not obj['verified']:
+                        is_mismatch = True
+                        print(f"DEBUG: Frame {frame_index}: Identity Mismatch! Distance: {obj['distance']}", file=sys.stderr)
                     else:
-                        # MediaPipe found face but dlib didn't? 
-                        # Could be occlusion or partial face.
-                        # Do not flag mismatch to avoid false positives.
-                        pass
+                        print(f"DEBUG: Frame {frame_index}: Verified. Distance: {obj['distance']}", file=sys.stderr)
+
                 except Exception as e:
                     print(f"DEBUG: Verification error: {e}", file=sys.stderr)
             
             print(f"DEBUG: Frame {frame_index}: detected {count} faces, Yaw: {yaw:.2f}", file=sys.stderr)
         else:
             head_pitches.append(0)
-            # No face = No mismatch (it's a NO_FACE event, not mismatch)
             
         face_counts.append(count)
         mismatches.append(is_mismatch)

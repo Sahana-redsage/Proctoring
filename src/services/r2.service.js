@@ -1,4 +1,4 @@
-const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { R2 } = require("../config/env");
 const fs = require("fs");
 
@@ -19,11 +19,27 @@ async function uploadToR2(filePath, key) {
       Bucket: R2.bucket,
       Key: key,
       Body: fileStream,
-      ContentType: "video/webm"
+      ContentType: "video/webm" // Adjust dynamically if needed, but webm is standard here
     })
   );
 
   return `${R2.publicUrl}/${key}`;
 }
 
-module.exports = { uploadToR2 };
+async function deleteFromR2(key) {
+  try {
+    await r2Client.send(
+      new DeleteObjectCommand({
+        Bucket: R2.bucket,
+        Key: key
+      })
+    );
+    console.log(`🗑️ [R2] Deleted: ${key}`);
+    return true;
+  } catch (err) {
+    console.error(`❌ [R2] Delete failed for ${key}:`, err);
+    return false;
+  }
+}
+
+module.exports = { uploadToR2, deleteFromR2 };

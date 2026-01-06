@@ -3,7 +3,7 @@ const path = require("path");
 
 const PYTHON_PATH = path.join(
   process.cwd(),
-  "ai-env",
+  "ai-env-3.10",
   "Scripts",
   "python.exe"
 );
