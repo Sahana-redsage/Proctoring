@@ -9,6 +9,31 @@ const ffmpeg = require("fluent-ffmpeg");
 
 console.log("🟢 Chunk Worker started");
 
+// 🛡️ Redis Config Check
+async function enforceRedisPolicy() {
+  try {
+    const policy = await redis.config("GET", "maxmemory-policy");
+    // policy result is strictly [param, value] usually? or just value depending on client. 
+    // IORedis config('GET', ...) returns [ 'maxmemory-policy', 'value' ]
+    const policyValue = Array.isArray(policy) ? policy[1] : policy;
+
+    if (policyValue !== "noeviction") {
+      console.warn(`⚠️ [Redis] Current policy is '${policyValue}'. Attempting to switch to 'noeviction'...`);
+      try {
+        await redis.config("SET", "maxmemory-policy", "noeviction");
+        console.log("✅ [Redis] Policy set to 'noeviction'. Data safety improved.");
+      } catch (setConfigErr) {
+        console.error("❌ [Redis] Failed to auto-set 'noeviction'. Please set 'maxmemory-policy noeviction' in redis.conf manually to prevent data loss.");
+      }
+    } else {
+      console.log("✅ [Redis] Policy is 'noeviction'.");
+    }
+  } catch (err) {
+    console.warn("⚠️ [Redis] Could not check configuration.", err.message);
+  }
+}
+enforceRedisPolicy();
+
 function run(cmd) {
   return new Promise((resolve, reject) => {
     exec(cmd, (err, stdout, stderr) => {
@@ -38,28 +63,31 @@ new Worker(
 
       console.log(`🚀 Processing AI Batch: Chunks ${fromChunkIndex} → ${toChunkIndex} (Session: ${sessionId})`);
 
-      // 1. Fetch ALL chunks
-      console.log(`[DEBUG] Fetching chunks from Redis...`);
+      // 1. Fetch ALL chunks from DISK
+      console.log(`[DEBUG] Verifying chunks on disk...`);
       const chunkFiles = [];
-      const batchDir = path.join(os.tmpdir(), `${sessionId}_batch_${fromChunkIndex}`);
+      const batchDir = path.join(os.tmpdir(), `${sessionId}_batch_${fromChunkIndex}`); // Temp work dir
       if (!fs.existsSync(batchDir)) fs.mkdirSync(batchDir, { recursive: true });
 
+      const STORAGE_DIR = path.join(os.tmpdir(), "proctoring_storage");
+      const sessionDir = path.join(STORAGE_DIR, sessionId);
+
       try {
-        console.log("[DEBUG] Entering fetch loop");
         for (let i = fromChunkIndex; i <= toChunkIndex; i++) {
-          const redisKey = `session:${sessionId}:chunk:${i}`;
-          console.log(`[DEBUG] Fetching key: ${redisKey}`);
+          const sourcePath = path.join(sessionDir, `chunk_${i}.webm`);
 
-          // USE DEDICATED HOST
-          const buffer = await dataRedis.getBuffer(redisKey);
-          console.log(`[DEBUG] Key fetched. Buffer size: ${buffer ? buffer.length : 'null'}`);
-
-          if (buffer) {
-            const p = path.join(batchDir, `part_${i}.webm`);
-            fs.writeFileSync(p, buffer);
-            chunkFiles.push(p);
+          if (fs.existsSync(sourcePath)) {
+            // Copy to workspace (optional, or just use sourcePath directly? 
+            // ffmpeg copies are safer if we modify them, but here we just read.
+            // But we need a consistent list. Let's symlink or copy. 
+            // Copying is robust.
+            const dest = path.join(batchDir, `part_${i}.webm`);
+            fs.copyFileSync(sourcePath, dest);
+            chunkFiles.push(dest);
           } else {
-            console.warn(`⚠️ Batch ${fromChunkIndex}-${toChunkIndex}: Missing chunk ${i} in Redis.`);
+            // FALLBACK: Check Redis just in case (migration)? No, confusing.
+            console.error(`❌ [CRITICAL] Missing chunk file: ${sourcePath}`);
+            throw new Error(`Chunk ${i} missing from disk. Upload failed or file deleted.`);
           }
         }
         console.log("[DEBUG] Fetch loop done");
@@ -115,9 +143,26 @@ new Worker(
 
         console.log(`⏱ [${sessionId}] Batch Info: Duration=${actualDuration}s, Frames=${frameCount}, FPS=${fps.toFixed(2)}`);
 
-        // Start time based on configuration (best effort for batch start)
-        // OR: accumulated duration if we tracked it, but for now config is safest base.
-        const startOfBatch = fromChunkIndex * CHUNK_DURATION_SEC;
+        // --- TIMESTAMP SYNC (VIDEO TIME) ---
+        // Calculate the cumulative duration of all previous chunks to find the true "Video Start Time" of this batch.
+        // This ensures events match the playback time of the final merged video, ignoring wall-clock gaps.
+        let startOfBatch = 0;
+        try {
+          const { rows } = await pool.query(
+            `SELECT COALESCE(SUM(end_time_seconds - start_time_seconds), 0) as offset 
+              FROM proctoring_chunks 
+              WHERE session_id = $1 AND chunk_index < $2`,
+            [sessionId, fromChunkIndex]
+          );
+          startOfBatch = parseFloat(rows[0].offset);
+          // If previous chunks are unprocessed/default, they contribute 30s. 
+          // If processed/shortened, they contribute actual duration. perfect.
+        } catch (err) {
+          console.warn(`Timestamp sync failed, falling back to index stats:`, err);
+          startOfBatch = fromChunkIndex * CHUNK_DURATION_SEC;
+        }
+
+        console.log(`⏱ [${sessionId}] Batch Video Start Time: ${startOfBatch.toFixed(2)}s`);
 
         for (let i = 0; i < frameCount; i++) {
           // Current second relative to batch start
@@ -166,14 +211,16 @@ new Worker(
           }
         }
 
-        // 5. Correct DB Metadata (End Time) for single chunks
+        // 5. Correct DB Metadata (Start & End Time) for continuous video timeline
         if (fromChunkIndex === toChunkIndex) {
-          const correctEndTime = startOfBatch + actualDuration;
+          const correctedStart = Math.round(startOfBatch);
+          const correctedEnd = Math.round(startOfBatch + actualDuration);
+
           await pool.query(
-            "UPDATE proctoring_chunks SET end_time_seconds = $1 WHERE session_id = $2 AND chunk_index = $3",
-            [Math.round(correctEndTime), sessionId, fromChunkIndex]
+            "UPDATE proctoring_chunks SET start_time_seconds = $1, end_time_seconds = $2 WHERE session_id = $3 AND chunk_index = $4",
+            [correctedStart, correctedEnd, sessionId, fromChunkIndex]
           );
-          console.log(`⏱ [${sessionId}] Corrected DB end_time for chunk ${fromChunkIndex} to ${Math.round(correctEndTime)}s`);
+          console.log(`⏱ [${sessionId}] Corrected DB timeline for chunk ${fromChunkIndex}: ${correctedStart}s - ${correctedEnd}s`);
         }
 
         // 6. Mark chunks as PROCESSED

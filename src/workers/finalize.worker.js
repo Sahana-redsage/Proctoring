@@ -115,20 +115,25 @@ const worker = new Worker(
 
       const chunkFiles = [];
 
-      console.log(`📥 [${sessionId}] Fetching ${chunks.length} chunks from Redis...`);
+      console.log(`📥 [${sessionId}] Fetching ${chunks.length} chunks from Disk...`);
+      const STORAGE_DIR = path.join(os.tmpdir(), "proctoring_storage");
+      const sessionDir = path.join(STORAGE_DIR, sessionId);
 
       for (const c of chunks) {
-        const redisKey = `session:${sessionId}:chunk:${c.chunk_index}`;
-        const buffer = await redis.getBuffer(redisKey);
+        // We can trust the DB file_path OR construct it standardly
+        // Let's rely on the standard path since we just set it up.
+        const sourcePath = path.join(sessionDir, `chunk_${c.chunk_index}.webm`);
 
-        if (!buffer) {
-          console.warn(`⚠️ [${sessionId}] Chunk ${c.chunk_index} missing in Redis! Skipping...`);
+        if (!fs.existsSync(sourcePath)) {
+          // Fallback to DB path if it exists?
+          if (c.file_path && fs.existsSync(c.file_path)) {
+            chunkFiles.push(c.file_path);
+            continue;
+          }
+          console.warn(`⚠️ [${sessionId}] Chunk ${c.chunk_index} missing on disk! Skipping...`);
           continue;
         }
-
-        const chunkPath = path.join(mergeDir, `chunk_${c.chunk_index}.webm`);
-        fs.writeFileSync(chunkPath, buffer);
-        chunkFiles.push(chunkPath);
+        chunkFiles.push(sourcePath);
       }
 
       const concatFile = path.join(mergeDir, `concat.txt`);
@@ -177,10 +182,13 @@ const worker = new Worker(
       );
 
       // Delete chunks from Redis
-      // console.log(`🧹 [${sessionId}] Cleaning up Redis keys...`);
-      // for (const c of chunks) {
-      //   await redis.del(`session:${sessionId}:chunk:${c.chunk_index}`);
-      // }
+      // Clean up Disk Storage
+      console.log(`🧹 [${sessionId}] Cleaning up disk storage...`);
+      try {
+        fs.rmSync(path.join(os.tmpdir(), "proctoring_storage", sessionId), { recursive: true, force: true });
+      } catch (e) {
+        console.warn(`Failed to clean up session dir: ${e.message}`);
+      }
       // Also delete event keys if any?
       // await redis.del(`session:${sessionId}:last_event:PHONE_USAGE`);
       // Keeping event keys till TTL/Eviction assumes they are small enough or let them expire.

@@ -3,6 +3,12 @@ const pool = require("../config/db");
 const redis = require("../config/redis");
 const { chunkQueue, finalizeQueue } = require("../config/bullmq");
 const { BATCH_SIZE } = require("../config/env");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+
+const STORAGE_DIR = path.join(os.tmpdir(), "proctoring_storage");
+if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
 
 
 
@@ -59,24 +65,29 @@ exports.uploadChunk = async (req, res) => {
 
   console.log(`📤 [${sessionId}] Received Chunk ${chunkIndex} (${startTimeSeconds}s - ${endTimeSeconds}s)`);
 
-  // Store in Redis (Buffer)
-  // Set TTL to 2 hours (7200 sec) to clean up abandoned sessions
-  const redisKey = `session:${sessionId}:chunk:${chunkIndex}`;
-  await redis.setex(redisKey, 7200, req.file.buffer);
+  // 💾 SAVE TO DISK (Avoid Redis Eviction)
+  const sessionDir = path.join(STORAGE_DIR, sessionId);
+  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
-  // Insert chunk metadata (filePath is now 'REDIS')
+  const chunkPath = path.join(sessionDir, `chunk_${chunkIndex}.webm`);
+  fs.writeFileSync(chunkPath, req.file.buffer);
+
+  console.log(`💾 [${sessionId}] Saved Chunk ${chunkIndex} to disk: ${chunkPath}`);
+
+  // Insert chunk metadata
   await pool.query(
     `
     INSERT INTO proctoring_chunks
     (session_id, chunk_index, start_time_seconds, end_time_seconds, file_path, status)
-    VALUES ($1, $2, $3, $4, 'REDIS', 'RECEIVED')
+    VALUES ($1, $2, $3, $4, $5, 'RECEIVED')
     ON CONFLICT (session_id, chunk_index) DO NOTHING
     `,
     [
       sessionId,
       chunkIndex,
       startTimeSeconds,
-      endTimeSeconds
+      endTimeSeconds,
+      chunkPath // Store actual path
     ]
   );
 
