@@ -5,7 +5,7 @@ const os = require("os");
 const { exec } = require("child_process");
 const pool = require("../config/db");
 const redis = require("../config/redis");
-const { uploadToR2 } = require("../services/r2.service");
+const { uploadToR2, deleteFromR2 } = require("../services/r2.service");
 const { finalizeQueue, redisConnection, chunkQueue } = require("../config/bullmq");
 
 require("dotenv").config();
@@ -26,6 +26,12 @@ const worker = new Worker(
   "finalizeQueue",
   async job => {
     const { sessionId } = job.data;
+
+    // Create redis client for data fetching
+    const IORedis = require("ioredis");
+    const { REDIS_URL } = require("../config/env");
+    const dataRedis = new IORedis(REDIS_URL);
+
 
     console.log(`🎬 Finalizing session ${sessionId}`);
     const client = await pool.connect();
@@ -118,21 +124,34 @@ const worker = new Worker(
       const STORAGE_DIR = path.join(os.tmpdir(), "proctoring_storage");
       const sessionDir = path.join(STORAGE_DIR, sessionId);
 
+      // Helper: Download file
+      const downloadFile = async (url, dest) => {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.statusText}`);
+        const buffer = await res.arrayBuffer();
+        fs.writeFileSync(dest, Buffer.from(buffer));
+      };
+
       for (const c of chunks) {
         // We can trust the DB file_path OR construct it standardly
         // Let's rely on the standard path since we just set it up.
         const sourcePath = path.join(sessionDir, `chunk_${c.chunk_index}.webm`);
+        const destPath = path.join(mergeDir, `chunk_${c.chunk_index}.webm`);
 
-        if (!fs.existsSync(sourcePath)) {
-          // Fallback to DB path if it exists?
-          if (c.file_path && fs.existsSync(c.file_path)) {
-            chunkFiles.push(c.file_path);
-            continue;
+        if (fs.existsSync(sourcePath)) {
+          // Local exists
+          chunkFiles.push(sourcePath);
+        } else {
+          // Try R2
+          const r2Url = await dataRedis.hget(`session:${sessionId}:chunks`, c.chunk_index);
+          if (r2Url) {
+            console.log(`☁️ [${sessionId}] Downloading chunk ${c.chunk_index} for merge...`);
+            await downloadFile(r2Url, destPath);
+            chunkFiles.push(destPath);
+          } else {
+            console.warn(`⚠️ [${sessionId}] Chunk ${c.chunk_index} missing on disk and R2! Skipping...`);
           }
-          console.warn(`⚠️ [${sessionId}] Chunk ${c.chunk_index} missing on disk! Skipping...`);
-          continue;
         }
-        chunkFiles.push(sourcePath);
       }
 
       const concatFile = path.join(mergeDir, `concat.txt`);
@@ -180,7 +199,6 @@ const worker = new Worker(
         [finalVideoUrl, sessionId]
       );
 
-      // Delete chunks from Redis
       // Clean up Disk Storage
       console.log(`🧹 [${sessionId}] Cleaning up disk storage...`);
       try {
@@ -188,22 +206,40 @@ const worker = new Worker(
       } catch (e) {
         console.warn(`Failed to clean up session dir: ${e.message}`);
       }
-      // Also delete event keys if any?
-      // await redis.del(`session:${sessionId}:last_event:PHONE_USAGE`);
-      // Keeping event keys till TTL/Eviction assumes they are small enough or let them expire.
+
+      // CLEANUP REDIS & R2 CHUNKS
+      console.log(`🧹 [${sessionId}] Deleting chunks from Cloudflare R2...`);
+      // Get all chunks from Redis
+      const chunkUrls = await dataRedis.hgetall(`session:${sessionId}:chunks`);
+      if (chunkUrls) {
+        for (const [index, url] of Object.entries(chunkUrls)) {
+          // Derive key from URL or just reconstruction?
+          // "proctoring/${sessionId}/chunk_${index}.webm"
+          // If URL is public, we need to extract key.
+          // But we know the key pattern locally:
+          const chunkKey = `proctoring/${sessionId}/chunk_${index}.webm`;
+          await deleteFromR2(chunkKey);
+        }
+      }
+
+      // Cleanup Redis Keys
+      await dataRedis.del(`session:${sessionId}:chunks`);
+      await dataRedis.del(`session:${sessionId}:reference_image_url`);
+      await dataRedis.del(`session:${sessionId}:reference_face`); // Cleanup legacy key too
 
       /**
        * 6️⃣ CLEANUP LOCAL FILES
        */
       fs.rmSync(mergeDir, { recursive: true, force: true });
 
-      console.log(`✅ [${sessionId}] Finalized successfully`);
+      console.log(`✅ [${sessionId}] Finalized and Cleaned successfully`);
 
     } catch (err) {
       console.error(`❌ [${sessionId}] Finalize failed:`, err);
       throw err;
     } finally {
       client.release();
+      dataRedis.quit();
     }
   },
   {

@@ -63,8 +63,16 @@ new Worker(
 
       console.log(`🚀 Processing AI Batch: Chunks ${fromChunkIndex} → ${toChunkIndex} (Session: ${sessionId})`);
 
-      // 1. Fetch ALL chunks from DISK
-      console.log(`[DEBUG] Verifying chunks on disk...`);
+      // Helper: Download file
+      const downloadFile = async (url, dest) => {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.statusText}`);
+        const buffer = await res.arrayBuffer();
+        fs.writeFileSync(dest, Buffer.from(buffer));
+      };
+
+      // 1. Fetch ALL chunks from DISK or R2 (Redis URL)
+      console.log(`[DEBUG] Verifying chunks...`);
       const chunkFiles = [];
       const batchDir = path.join(os.tmpdir(), `${sessionId}_batch_${fromChunkIndex}`); // Temp work dir
       if (!fs.existsSync(batchDir)) fs.mkdirSync(batchDir, { recursive: true });
@@ -75,19 +83,23 @@ new Worker(
       try {
         for (let i = fromChunkIndex; i <= toChunkIndex; i++) {
           const sourcePath = path.join(sessionDir, `chunk_${i}.webm`);
+          const dest = path.join(batchDir, `part_${i}.webm`);
 
           if (fs.existsSync(sourcePath)) {
-            // Copy to workspace (optional, or just use sourcePath directly? 
-            // ffmpeg copies are safer if we modify them, but here we just read.
-            // But we need a consistent list. Let's symlink or copy. 
-            // Copying is robust.
-            const dest = path.join(batchDir, `part_${i}.webm`);
+            // Local file exists (Cache)
             fs.copyFileSync(sourcePath, dest);
             chunkFiles.push(dest);
           } else {
-            // FALLBACK: Check Redis just in case (migration)? No, confusing.
-            console.error(`❌ [CRITICAL] Missing chunk file: ${sourcePath}`);
-            throw new Error(`Chunk ${i} missing from disk. Upload failed or file deleted.`);
+            // Try fetching R2 URL from Redis
+            const r2Url = await dataRedis.hget(`session:${sessionId}:chunks`, i);
+            if (r2Url) {
+              console.log(`☁️ [${sessionId}] Chunk ${i} missing on disk, downloading from R2...`);
+              await downloadFile(r2Url, dest);
+              chunkFiles.push(dest);
+            } else {
+              console.error(`❌ [CRITICAL] Missing chunk file and no R2 URL: ${sourcePath}`);
+              throw new Error(`Chunk ${i} missing from disk and Redis. Upload failed or file deleted.`);
+            }
           }
         }
         console.log("[DEBUG] Fetch loop done");
@@ -109,14 +121,29 @@ new Worker(
 
         // Fetch Reference Face (Identity Check)
         console.log(`[DEBUG] Checking for reference face...`);
-        const refKey = `session:${sessionId}:reference_face`;
-        const refBuffer = await dataRedis.getBuffer(refKey);
+        // New URL logic
+        const refUrlKey = `session:${sessionId}:reference_image_url`;
+        const refUrl = await dataRedis.get(refUrlKey);
 
         let refPath = null;
-        if (refBuffer) {
+        if (refUrl) {
+          console.log(`📸 [${sessionId}] Downloading reference face from R2...`);
           refPath = path.join(batchDir, 'reference.jpg');
-          fs.writeFileSync(refPath, refBuffer);
-          console.log(`📸 [${sessionId}] Reference face found, verification enabled.`);
+          await downloadFile(refUrl, refPath);
+          console.log(`📸 [${sessionId}] Reference face downloaded.`);
+        } else {
+          // Fallback to old buffer way (just in case of mixed versions)
+          const refKey = `session:${sessionId}:reference_face`;
+          const refBuffer = await dataRedis.getBuffer(refKey);
+          if (refBuffer) {
+            refPath = path.join(batchDir, 'reference.jpg');
+            fs.writeFileSync(refPath, refBuffer);
+            console.log(`📸 [${sessionId}] Reference face found (legacy buffer).`);
+          }
+        }
+
+        if (refPath) {
+          console.log(`📸 [${sessionId}] Verification enabled.`);
         }
 
         // 3. Run AI on the BATCH video
