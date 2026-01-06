@@ -3,14 +3,8 @@ const pool = require("../config/db");
 const redis = require("../config/redis");
 const { chunkQueue, finalizeQueue } = require("../config/bullmq");
 const { BATCH_SIZE } = require("../config/env");
-const fs = require("fs");
 const path = require("path");
-const os = require("os");
-const { uploadToR2 } = require("../services/r2.service");
-
-const STORAGE_DIR = path.join(os.tmpdir(), "proctoring_storage");
-if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
-
+const { uploadBufferToR2 } = require("../services/r2.service");
 
 // 1️⃣ START SESSION
 exports.startSession = async (req, res) => {
@@ -41,20 +35,13 @@ exports.uploadReferenceImage = async (req, res) => {
   }
 
   try {
-    // 1. Save to Temp Disk temporarily for Upload
-    const tempPath = path.join(os.tmpdir(), `${sessionId}_ref.jpg`);
-    fs.writeFileSync(tempPath, req.file.buffer);
-
-    // 2. Upload to Cloudflare R2
+    // Upload directly to Cloudflare R2
     const r2Key = `proctoring/reference/${sessionId}.jpg`;
-    const r2Url = await uploadToR2(tempPath, r2Key);
+    const r2Url = await uploadBufferToR2(req.file.buffer, r2Key, "image/jpeg");
 
-    // 3. Store URL in Redis
+    // Store URL in Redis
     const redisKey = `session:${sessionId}:reference_image_url`;
     await redis.set(redisKey, r2Url);
-
-    // Cleanup
-    fs.unlinkSync(tempPath);
 
     console.log(`📸 [${sessionId}] Reference face uploaded to R2: ${r2Url}`);
     res.json({ success: true, message: "Reference face uploaded and saved" });
@@ -64,7 +51,7 @@ exports.uploadReferenceImage = async (req, res) => {
   }
 };
 
-// 2️⃣ UPLOAD CHUNK (REDIS STORAGE)
+// 2️⃣ UPLOAD CHUNK
 exports.uploadChunk = async (req, res) => {
   const {
     sessionId
@@ -80,30 +67,19 @@ exports.uploadChunk = async (req, res) => {
 
   console.log(`📤 [${sessionId}] Received Chunk ${chunkIndex} (${startTimeSeconds}s - ${endTimeSeconds}s)`);
 
-  // 💾 SAVE TO DISK (Cache/Backup)
-  const sessionDir = path.join(STORAGE_DIR, sessionId);
-  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
-
-  const chunkPath = path.join(sessionDir, `chunk_${chunkIndex}.webm`);
-  fs.writeFileSync(chunkPath, req.file.buffer);
-
-  // ☁️ UPLOAD TO R2 (Requirement)
-  // We can do this asynchronously if we don't want to block, but requirement implies backend "Need to upload"
-  // Let's await it to be safe for now, or fire and forget if performance is critical.
-  // Given "worker processing", reliability > speed here.
+  // ☁️ UPLOAD TO R2 DIRECTLY
   const r2Key = `proctoring/${sessionId}/chunk_${chunkIndex}.webm`;
   let r2Url = "";
   try {
-    r2Url = await uploadToR2(chunkPath, r2Key);
+    r2Url = await uploadBufferToR2(req.file.buffer, r2Key, "video/webm");
+
     // Store in Redis Hash
     await redis.hset(`session:${sessionId}:chunks`, chunkIndex, r2Url);
     console.log(`☁️ [${sessionId}] Chunk ${chunkIndex} uploaded to R2.`);
   } catch (e) {
     console.error(`❌ [${sessionId}] R2 Chunk Upload failed:`, e);
-    // Fallback? proceed with local flow
+    return res.status(500).json({ success: false, message: "Upload failed" });
   }
-
-  console.log(`💾 [${sessionId}] Saved Chunk ${chunkIndex} to disk: ${chunkPath}`);
 
   // Insert chunk metadata
   await pool.query(
@@ -118,7 +94,7 @@ exports.uploadChunk = async (req, res) => {
       chunkIndex,
       startTimeSeconds,
       endTimeSeconds,
-      chunkPath // Store actual path
+      r2Url // Only use R2 URL
     ]
   );
 

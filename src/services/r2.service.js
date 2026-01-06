@@ -42,4 +42,17 @@ async function deleteFromR2(key) {
   }
 }
 
-module.exports = { uploadToR2, deleteFromR2 };
+async function uploadBufferToR2(buffer, key, contentType = "video/webm") {
+  await r2Client.send(
+    new PutObjectCommand({
+      Bucket: R2.bucket,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType
+    })
+  );
+
+  return `${R2.publicUrl}/${key}`;
+}
+
+module.exports = { uploadToR2, uploadBufferToR2, deleteFromR2 };
