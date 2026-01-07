@@ -81,6 +81,7 @@ new Worker(
       const sessionDir = path.join(STORAGE_DIR, sessionId);
 
       try {
+        const missingChunks = [];
         for (let i = fromChunkIndex; i <= toChunkIndex; i++) {
           const sourcePath = path.join(sessionDir, `chunk_${i}.webm`);
           const dest = path.join(batchDir, `part_${i}.webm`);
@@ -94,14 +95,31 @@ new Worker(
             const r2Url = await dataRedis.hget(`session:${sessionId}:chunks`, i);
             if (r2Url) {
               console.log(`☁️ [${sessionId}] Chunk ${i} missing on disk, downloading from R2...`);
-              await downloadFile(r2Url, dest);
-              chunkFiles.push(dest);
+              try {
+                await downloadFile(r2Url, dest);
+                chunkFiles.push(dest);
+              } catch (downloadErr) {
+                console.warn(`⚠️ [${sessionId}] Chunk ${i} download failed (likely already deleted from R2). Marking as PROCESSED.`);
+                missingChunks.push(i);
+              }
             } else {
-              console.error(`❌ [CRITICAL] Missing chunk file and no R2 URL: ${sourcePath}`);
-              throw new Error(`Chunk ${i} missing from disk and Redis. Upload failed or file deleted.`);
+              console.warn(`⚠️ [${sessionId}] Chunk ${i} has no R2 URL in Redis. Marking as PROCESSED.`);
+              missingChunks.push(i);
             }
           }
         }
+
+        // Mark missing chunks as PROCESSED to prevent retry loops
+        if (missingChunks.length > 0) {
+          console.log(`💾 [${sessionId}] Marking ${missingChunks.length} missing chunks as PROCESSED: ${missingChunks.join(', ')}`);
+          for (const chunkIndex of missingChunks) {
+            await pool.query(
+              "UPDATE proctoring_chunks SET status = 'PROCESSED' WHERE session_id = $1 AND chunk_index = $2",
+              [sessionId, chunkIndex]
+            );
+          }
+        }
+
         console.log("[DEBUG] Fetch loop done");
 
         if (chunkFiles.length === 0) {

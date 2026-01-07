@@ -102,7 +102,7 @@ const worker = new Worker(
             fromChunkIndex: minIndex,
             toChunkIndex: maxIndex
           }, {
-            jobId: `batch:${sessionId}:${minIndex}-${maxIndex}`, // Dedup
+            jobId: `batch:${sessionId}:${minIndex}`, // Match controller format for dedup
             removeOnComplete: true
           });
 
