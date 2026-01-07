@@ -63,35 +63,56 @@ const worker = new Worker(
         // Any RECEIVED chunks are definitely leftovers (orphans) that didn't form a full batch.
         // We must force-process them immediately.
 
+        console.log(`🧩 [${sessionId}] Found ${stuckChunks.length} unprocessed pending chunks. Verifying existence...`);
 
-        console.log(`🧩 [${sessionId}] Found ${stuckChunks.length} unprocessed pending chunks. Triggering forced processing...`);
+        // Verify which stuck chunks actually exist before processing
+        const STORAGE_DIR = path.join(os.tmpdir(), "proctoring_storage");
+        const sessionDir = path.join(STORAGE_DIR, sessionId);
+        const existingStuckChunks = [];
 
-        // Group by contiguous chunks or just group all together?
-        // Since valid batches are already processed, these act like the "remainder".
-        // They should ideally be contiguous at the end, but let's be safe.
-        // We will trigger a batch job for the range of these chunks.
+        for (const chunk of stuckChunks) {
+          const sourcePath = path.join(sessionDir, `chunk_${chunk.chunk_index}.webm`);
+          const r2Url = await dataRedis.hget(`session:${sessionId}:chunks`, chunk.chunk_index);
 
-        const minIndex = Math.min(...stuckChunks.map(c => c.chunk_index));
-        const maxIndex = Math.max(...stuckChunks.map(c => c.chunk_index));
+          if (fs.existsSync(sourcePath) || r2Url) {
+            existingStuckChunks.push(chunk);
+          } else {
+            console.warn(`⚠️ [${sessionId}] Chunk ${chunk.chunk_index} marked RECEIVED but missing from disk and R2. Marking as PROCESSED to skip.`);
+            // Mark as PROCESSED to prevent blocking finalization
+            await client.query(
+              "UPDATE proctoring_chunks SET status = 'PROCESSED' WHERE session_id = $1 AND chunk_index = $2",
+              [sessionId, chunk.chunk_index]
+            );
+          }
+        }
 
-        /* 
-           We invoke the chunkQueue manually.
-           We assume stuck chunks are the tail end.
-        */
-        const { chunkQueue } = require("../config/bullmq");
-        await chunkQueue.add("PROCESS_BATCH_AI", {
-          sessionId,
-          fromChunkIndex: minIndex,
-          toChunkIndex: maxIndex
-        }, {
-          jobId: `batch:${sessionId}:${minIndex}-${maxIndex}`, // Dedup?
-          removeOnComplete: true
-        });
+        if (existingStuckChunks.length > 0) {
+          console.log(`🧩 [${sessionId}] Processing ${existingStuckChunks.length} verified stuck chunks...`);
 
-        // Requeue finalize to wait for this new job to finish
-        console.log(`⏳ [${sessionId}] Requeuing finalize to wait for leftovers...`);
-        await finalizeQueue.add("FINALIZE_SESSION", { sessionId }, { delay: 5000, attempts: 10 });
-        return;
+          const minIndex = Math.min(...existingStuckChunks.map(c => c.chunk_index));
+          const maxIndex = Math.max(...existingStuckChunks.map(c => c.chunk_index));
+
+          /* 
+             We invoke the chunkQueue manually.
+             We assume stuck chunks are the tail end.
+          */
+          const { chunkQueue } = require("../config/bullmq");
+          await chunkQueue.add("PROCESS_BATCH_AI", {
+            sessionId,
+            fromChunkIndex: minIndex,
+            toChunkIndex: maxIndex
+          }, {
+            jobId: `batch:${sessionId}:${minIndex}-${maxIndex}`, // Dedup
+            removeOnComplete: true
+          });
+
+          // Requeue finalize to wait for this new job to finish
+          console.log(`⏳ [${sessionId}] Requeuing finalize to wait for leftovers...`);
+          await finalizeQueue.add("FINALIZE_SESSION", { sessionId }, { delay: 5000, attempts: 10 });
+          return;
+        } else {
+          console.log(`✅ [${sessionId}] All stuck chunks were phantom entries. Continuing finalization...`);
+        }
       }
 
       const incomplete = chunks.some(
