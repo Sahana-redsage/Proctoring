@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     DATABASE_URL: str
     REDIS_URL: str
+    PORT: int = 8000
 
     R2_ENDPOINT: str
     R2_ACCESS_KEY_ID: str
