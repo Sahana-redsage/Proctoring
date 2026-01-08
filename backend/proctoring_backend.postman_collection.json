@@ -1,0 +1,265 @@
+{
+    "info": {
+        "_postman_id": "7538a8e1-5e8c-4a3b-a641-f761e0f0c0f1",
+        "name": "Proctoring Backend API",
+        "description": "Postman collection for the Proctoring Backend System.",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "Health",
+            "item": [
+                {
+                    "name": "Health Check",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{baseUrl}}/health",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "health"
+                            ]
+                        },
+                        "description": "Check if the backend is alive."
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Sessions",
+            "item": [
+                {
+                    "name": "Start Session",
+                    "request": {
+                        "method": "POST",
+                        "header": [],
+                        "url": {
+                            "raw": "{{baseUrl}}/sessions/start?exam_id=00000000-0000-0000-0000-000000000000&candidate_id=00000000-0000-0000-0000-000000000000",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "sessions",
+                                "start"
+                            ],
+                            "query": [
+                                {
+                                    "key": "exam_id",
+                                    "value": "00000000-0000-0000-0000-000000000000"
+                                },
+                                {
+                                    "key": "candidate_id",
+                                    "value": "00000000-0000-0000-0000-000000000000"
+                                }
+                            ]
+                        },
+                        "description": "Initialize a new proctoring session. Uses valid UUID strings."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Upload Reference Photo",
+                    "request": {
+                        "method": "POST",
+                        "header": [],
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "file",
+                                    "type": "file",
+                                    "src": []
+                                }
+                            ]
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/sessions/:session_id/reference-photo",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "sessions",
+                                ":session_id",
+                                "reference-photo"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "session_id",
+                                    "value": "ENTER_SESSION_ID"
+                                }
+                            ]
+                        },
+                        "description": "Upload a reference photo for the candidate at the start of the session."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "End Session",
+                    "request": {
+                        "method": "POST",
+                        "header": [],
+                        "url": {
+                            "raw": "{{baseUrl}}/sessions/:session_id/end?last_chunk_index=0",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "sessions",
+                                ":session_id",
+                                "end"
+                            ],
+                            "query": [
+                                {
+                                    "key": "last_chunk_index",
+                                    "value": "0"
+                                }
+                            ],
+                            "variable": [
+                                {
+                                    "key": "session_id",
+                                    "value": "ENTER_SESSION_ID"
+                                }
+                            ]
+                        },
+                        "description": "Signal that the session has ended and provide the last chunk index."
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Chunks",
+            "item": [
+                {
+                    "name": "Upload Chunk",
+                    "request": {
+                        "method": "POST",
+                        "header": [],
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "file",
+                                    "type": "file",
+                                    "src": []
+                                }
+                            ]
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/chunks/:session_id/:chunk_index",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "chunks",
+                                ":session_id",
+                                ":chunk_index"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "session_id",
+                                    "value": "ENTER_SESSION_ID"
+                                },
+                                {
+                                    "key": "chunk_index",
+                                    "value": "0"
+                                }
+                            ]
+                        },
+                        "description": "Upload a video chunk for a given session."
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Admin",
+            "item": [
+                {
+                    "name": "List Sessions",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{baseUrl}}/admin/sessions",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "admin",
+                                "sessions"
+                            ]
+                        },
+                        "description": "List all proctoring sessions."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Session Events",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{baseUrl}}/admin/sessions/:session_id/events",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "admin",
+                                "sessions",
+                                ":session_id",
+                                "events"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "session_id",
+                                    "value": "ENTER_SESSION_ID"
+                                }
+                            ]
+                        },
+                        "description": "Get all flagged events for a specific session."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Final Video URL",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{baseUrl}}/admin/sessions/:session_id/video",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "admin",
+                                "sessions",
+                                ":session_id",
+                                "video"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "session_id",
+                                    "value": "ENTER_SESSION_ID"
+                                }
+                            ]
+                        },
+                        "description": "Get the URL of the merged final video for a session."
+                    },
+                    "response": []
+                }
+            ]
+        }
+    ],
+    "variable": [
+        {
+            "key": "baseUrl",
+            "value": "http://localhost:8000",
+            "type": "string"
+        }
+    ]
+}
