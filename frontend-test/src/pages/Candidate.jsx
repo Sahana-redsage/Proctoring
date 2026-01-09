@@ -111,7 +111,7 @@ export default function Candidate() {
       if (recorder.state === "recording") {
         recorder.stop();
       }
-    }, parseInt(import.meta.env.VITE_CHUNK_DURATION_MS) || 10000);
+    }, parseInt(import.meta.env.VITE_CHUNK_DURATION_MS) || 30000);
   };
 
   /* 4️⃣ END EXAM */
